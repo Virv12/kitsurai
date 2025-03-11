@@ -1,0 +1,7 @@
+services:
+  kitsurai:
+    build: .
+    image: kitsurai
+    scale: 3
+    volumes:
+      - ./shared:/app/shared:ro
