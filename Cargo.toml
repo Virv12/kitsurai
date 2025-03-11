@@ -6,4 +6,7 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0.97"
 axum = "0.8.1"
-tokio = { version = "1.44.0", features = ["net", "rt-multi-thread"] }
+local-ip-address = "0.6.3"
+postcard = { version = "1.1.1", features = ["use-std"] }
+serde = { version = "1.0.219", features = ["derive"] }
+tokio = { version = "1.44.0", features = ["io-util", "net", "rt-multi-thread"] }

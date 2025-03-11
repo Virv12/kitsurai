@@ -1,9 +1,10 @@
 use anyhow::Result;
+use tokio::try_join;
 
 mod http;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    http::main().await?;
+    try_join!(http::main(), kitsurai::rpc_listener())?;
     Ok(())
 }

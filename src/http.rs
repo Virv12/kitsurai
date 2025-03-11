@@ -17,7 +17,7 @@ pub async fn main() -> Result<()> {
         .route("/table/{table}/{key}", post(item_set))
         .route("/table/{table}/{key}", delete(item_delete));
 
-    let listener = TcpListener::bind("127.0.0.1:8000").await?;
+    let listener = TcpListener::bind("0.0.0.0:8000").await?;
     axum::serve(listener, app).await?;
     Ok(())
 }
@@ -27,21 +27,21 @@ async fn root() -> &'static str {
 }
 
 async fn table_create(Path(table): Path<String>) -> (StatusCode, String) {
-    match kitsurai::table_create(&table) {
+    match kitsurai::table_create(&table).await {
         Ok(()) => (StatusCode::CREATED, "Table created!\n".to_string()),
         Err(e) => (StatusCode::BAD_REQUEST, format!("{e}\n")),
     }
 }
 
 async fn table_delete(Path(table): Path<String>) -> (StatusCode, String) {
-    match kitsurai::table_delete(&table) {
+    match kitsurai::table_delete(&table).await {
         Ok(()) => (StatusCode::OK, "Table deleted!\n".to_string()),
         Err(e) => (StatusCode::BAD_REQUEST, format!("{e}\n")),
     }
 }
 
 async fn item_get(Path((table, key)): Path<(String, String)>) -> (StatusCode, Vec<u8>) {
-    match kitsurai::item_get(&table, &key) {
+    match kitsurai::item_get(&table, &key).await {
         Ok(Some(value)) => (StatusCode::OK, value),
         Ok(None) => (StatusCode::NOT_FOUND, Vec::new()),
         Err(e) => (StatusCode::BAD_REQUEST, format!("{e}\n").into_bytes()),
@@ -49,14 +49,14 @@ async fn item_get(Path((table, key)): Path<(String, String)>) -> (StatusCode, Ve
 }
 
 async fn item_set(Path((table, key)): Path<(String, String)>, body: Bytes) -> (StatusCode, String) {
-    match kitsurai::item_set(&table, &key, body.to_vec()) {
+    match kitsurai::item_set(&table, &key, body.to_vec()).await {
         Ok(()) => (StatusCode::CREATED, "Item set!\n".to_string()),
         Err(e) => (StatusCode::BAD_REQUEST, format!("{e}\n")),
     }
 }
 
 async fn item_delete(Path((table, key)): Path<(String, String)>) -> (StatusCode, String) {
-    match kitsurai::item_delete(&table, &key) {
+    match kitsurai::item_delete(&table, &key).await {
         Ok(()) => (StatusCode::OK, "Item deleted!\n".to_string()),
         Err(e) => (StatusCode::BAD_REQUEST, format!("{e}\n")),
     }
