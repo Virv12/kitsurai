@@ -1,0 +1,9 @@
+[package]
+name = "kitsurai"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.97"
+axum = "0.8.1"
+tokio = { version = "1.44.0", features = ["net", "rt-multi-thread"] }
