@@ -1,0 +1,20 @@
+name: Rust
+
+on: [push, pull_request]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+    - name: cargo fmt
+      run: cargo fmt --check
+    - name: cargo clippy
+      run: cargo clippy --all-features --all-targets -- -D warnings
+    - name: cargo test
+      run: RUST_BACKTRACE=1 cargo test --all-features --all-targets --no-fail-fast
+
