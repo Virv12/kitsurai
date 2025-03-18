@@ -2,11 +2,11 @@ use crate::rpc::{Rpc, RpcExec, RpcRequest, RpcRequestRecv};
 use anyhow::bail;
 use serde::{Deserialize, Serialize};
 use std::{
-    net::ToSocketAddrs,
-    net::{IpAddr, SocketAddr},
+    net::{IpAddr, SocketAddr, ToSocketAddrs},
     sync::LazyLock,
+    time::Duration,
 };
-use tokio::{net::TcpStream, task::JoinSet};
+use tokio::{net::TcpStream, task::JoinSet, time::timeout};
 
 mod rpc;
 mod store;
@@ -14,6 +14,7 @@ mod store;
 static REPLICATION: u64 = 3;
 static NECESSARY_READ: u64 = 2;
 static NECESSARY_WRITE: u64 = 2;
+static TIMEOUT: Duration = Duration::from_secs(1);
 
 #[derive(Clone)]
 struct Peer {
@@ -48,37 +49,45 @@ static PEERS: LazyLock<Vec<Peer>> = LazyLock::new(|| {
 
     let mut circular = Vec::new();
     circular.extend_from_slice(&all);
-    circular.extend_from_slice(&all[..REPLICATION as usize]);
+    circular.extend_from_slice(&all[..REPLICATION as usize - 1]);
     circular
 });
 
 // TODO: non so se serve veramente il più 1
-static BUCKET_SIZE: LazyLock<u64> = LazyLock::new(|| u64::MAX / PEERS.len() as u64 + 1);
+static BUCKET_SIZE: LazyLock<u64> =
+    LazyLock::new(|| u64::MAX / (PEERS.len() as u64 - (REPLICATION - 1)) + 1);
+
+fn peers_for_key(key: &str) -> &'static [Peer] {
+    let hash = xxhash_rust::xxh3::xxh3_64(key.as_ref());
+    let index = hash / *BUCKET_SIZE;
+    eprintln!("DHT: {hash} -> {index}");
+    let index = index as usize;
+    &PEERS[index..index + REPLICATION as usize]
+}
 
 pub async fn item_get(key: &str) -> anyhow::Result<Vec<Option<Vec<u8>>>> {
-    let index = xxhash_rust::xxh3::xxh3_64(key.as_ref()) / *BUCKET_SIZE;
-    let index = index as usize;
-    let chosen = &PEERS[index..index + REPLICATION as usize];
-
     let mut set = JoinSet::new();
-    for peer in chosen {
-        set.spawn(
+    for peer in peers_for_key(key) {
+        set.spawn(timeout(
+            TIMEOUT,
             ItemGet {
                 key: key.to_string(),
             }
             .exec(peer),
-        );
+        ));
     }
 
     let mut successes = 0;
     let mut results = Vec::new();
     while let Some(res) = set.join_next().await {
-        match res.expect("Join error.")? {
-            Ok(res) => {
+        match res.expect("Join error.") {
+            Ok(Ok(Ok(res))) => {
                 successes += 1;
                 results.push(res);
             }
-            Err(error) => eprintln!("One day maybe handle this: {error}"),
+            Ok(Ok(Err(store_error))) => eprintln!("Store error: {store_error}"),
+            Ok(Err(rpc_error)) => eprintln!("Rpc error: {rpc_error}"),
+            Err(timeout_error) => eprintln!("Timeout error: {timeout_error}"),
         }
 
         if successes >= NECESSARY_READ {
@@ -91,25 +100,25 @@ pub async fn item_get(key: &str) -> anyhow::Result<Vec<Option<Vec<u8>>>> {
 }
 
 pub async fn item_set(key: &str, value: Vec<u8>) -> anyhow::Result<()> {
-    let index = (xxhash_rust::xxh3::xxh3_64(key.as_ref()) / *BUCKET_SIZE) as usize;
-    let chosen: &[Peer] = &PEERS[index..index + REPLICATION as usize];
-
     let mut set = JoinSet::new();
-    for peer in chosen {
-        set.spawn(
+    for peer in peers_for_key(key) {
+        set.spawn(timeout(
+            TIMEOUT,
             ItemSet {
                 key: key.to_string(),
                 value: value.clone(),
             }
             .exec(peer),
-        );
+        ));
     }
 
     let mut successes = 0;
     while let Some(res) = set.join_next().await {
-        match res.expect("Join error.")? {
-            Ok(()) => successes += 1,
-            Err(error) => eprintln!("One day maybe handle this: {error}"),
+        match res.expect("Join error.") {
+            Ok(Ok(Ok(()))) => successes += 1,
+            Ok(Ok(Err(store_error))) => eprintln!("Store error: {store_error}"),
+            Ok(Err(rpc_error)) => eprintln!("Rpc error: {rpc_error}"),
+            Err(timeout_error) => eprintln!("Timeout error: {timeout_error}"),
         }
 
         if successes >= NECESSARY_WRITE {
