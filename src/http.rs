@@ -1,5 +1,4 @@
 use anyhow::Result;
-use axum::extract::Query;
 use axum::{
     body::Bytes,
     extract::Path,
@@ -7,6 +6,7 @@ use axum::{
     routing::{get, post},
     Router,
 };
+use serde::Serialize;
 use tokio::net::TcpListener;
 
 pub async fn main() -> Result<()> {
@@ -24,41 +24,57 @@ async fn root() -> &'static str {
     "Hello from Kitsurai!\n"
 }
 
-use serde::Deserialize;
+struct BytesFormatter;
 
-#[derive(Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-enum Decode {
-    #[default]
-    Raw,
-    Utf8,
+impl serde_json::ser::Formatter for BytesFormatter {
+    fn write_byte_array<W>(&mut self, writer: &mut W, mut value: &[u8]) -> std::io::Result<()>
+    where
+        W: ?Sized + std::io::Write,
+    {
+        writer.write_all(b"\"")?;
+        while !value.is_empty() {
+            let valid_up_to = match std::str::from_utf8(value) {
+                Ok(valid) => valid.len(),
+                Err(utf8_error) => utf8_error.valid_up_to(),
+            };
+            let (valid, rest) = value.split_at(valid_up_to);
+            for byte in valid {
+                match byte {
+                    0x08 => writer.write_all(b"\\b"),
+                    b'\t' => writer.write_all(b"\\t"),
+                    b'\n' => writer.write_all(b"\\n"),
+                    0x0C => writer.write_all(b"\\f"),
+                    b'\r' => writer.write_all(b"\\r"),
+                    b'"' => writer.write_all(b"\\\""),
+                    b'\\' => writer.write_all(b"\\\\"),
+                    ctrl @ ..=0x1F => write!(writer, "\\u{ctrl:04x}"),
+                    _ => writer.write_all(std::slice::from_ref(byte)),
+                }?;
+            }
+            if let Some((invalid, rest)) = rest.split_first() {
+                write!(writer, "\\u{invalid:04x}")?;
+                value = rest;
+            } else {
+                break;
+            }
+        }
+        writer.write_all(b"\"")
+    }
 }
 
-#[derive(Deserialize, Default)]
-struct GetConfig {
-    #[serde(default)]
-    decode: Decode,
-}
-
-async fn item_get(
-    Path(key): Path<String>,
-    Query(config): Query<GetConfig>,
-) -> (StatusCode, Vec<u8>) {
+async fn item_get(Path(key): Path<String>) -> (StatusCode, Vec<u8>) {
     match kitsurai::item_get(&key).await {
         Ok(value) => {
-            let output = match config.decode {
-                Decode::Raw => Vec::from(json::stringify(value) + "\n"),
-                Decode::Utf8 => {
-                    let decoded: Vec<Option<String>> = value
-                        .into_iter()
-                        .map(|read| read.map(|bytes| String::from(String::from_utf8_lossy(&bytes))))
-                        .collect();
-
-                    Vec::from(json::stringify(decoded) + "\n")
-                }
-            };
-
-            (StatusCode::OK, output)
+            let value: Vec<_> = value
+                .into_iter()
+                .map(|read| read.map(serde_bytes::ByteBuf::from))
+                .collect();
+            let mut body = Vec::new();
+            let mut ser = serde_json::Serializer::with_formatter(&mut body, BytesFormatter);
+            value.serialize(&mut ser).unwrap();
+            body.push(b'\n');
+            // TODO: missing content-type
+            (StatusCode::OK, body)
         }
         Err(e) => (StatusCode::BAD_REQUEST, format!("{e}\n").into_bytes()),
     }
