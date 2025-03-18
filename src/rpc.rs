@@ -1,4 +1,5 @@
 use crate::Peer;
+use anyhow::Result;
 use serde::{de::DeserializeOwned, Serialize};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -13,19 +14,19 @@ where
     type Response: Serialize + DeserializeOwned + Clone;
 
     fn into_variant(self) -> Self::Request;
-    async fn handle(self) -> anyhow::Result<Self::Response>;
+    async fn handle(self) -> Result<Self::Response>;
 }
 
 pub(crate) trait RpcExec
 where
     Self: Rpc,
 {
-    async fn exec(self, peer: &Peer) -> anyhow::Result<Self::Response>;
-    async fn remote(self, stream: TcpStream) -> anyhow::Result<()>;
+    async fn exec(self, peer: &Peer) -> Result<Self::Response>;
+    async fn remote(self, stream: TcpStream) -> Result<()>;
 }
 
 impl<T: Rpc> RpcExec for T {
-    async fn exec(self, peer: &Peer) -> anyhow::Result<Self::Response> {
+    async fn exec(self, peer: &Peer) -> Result<Self::Response> {
         if peer.is_self {
             self.handle().await
         } else {
@@ -37,12 +38,12 @@ impl<T: Rpc> RpcExec for T {
             // Read remote response.
             let mut buffer = Vec::new();
             stream.read_to_end(&mut buffer).await?;
-            let parsed = postcard::from_bytes::<Self::Response>(&buffer)?;
-            Ok(parsed.clone())
+            let parsed = postcard::from_bytes(&buffer)?;
+            Ok(parsed)
         }
     }
 
-    async fn remote(self, mut stream: TcpStream) -> anyhow::Result<()> {
+    async fn remote(self, mut stream: TcpStream) -> Result<()> {
         let result = self.handle().await?;
 
         // Send result.
@@ -53,19 +54,16 @@ impl<T: Rpc> RpcExec for T {
 }
 
 pub(crate) trait RpcRequest: Serialize + DeserializeOwned {
-    fn remote(
-        self,
-        stream: TcpStream,
-    ) -> impl std::future::Future<Output = anyhow::Result<()>> + Send;
+    fn remote(self, stream: TcpStream) -> impl std::future::Future<Output = Result<()>> + Send;
 }
 
 pub(crate) trait RpcRequestRecv: RpcRequest {
-    async fn listener<A: ToSocketAddrs>(addr: A) -> anyhow::Result<()>;
-    async fn recv(stream: TcpStream) -> anyhow::Result<()>;
+    async fn listener<A: ToSocketAddrs>(addr: A) -> Result<()>;
+    async fn recv(stream: TcpStream) -> Result<()>;
 }
 
 impl<T: RpcRequest + 'static> RpcRequestRecv for T {
-    async fn listener<A: ToSocketAddrs>(addr: A) -> anyhow::Result<()> {
+    async fn listener<A: ToSocketAddrs>(addr: A) -> Result<()> {
         let listener = TcpListener::bind(addr).await?;
 
         loop {
@@ -73,7 +71,7 @@ impl<T: RpcRequest + 'static> RpcRequestRecv for T {
             tokio::spawn(Self::recv(socket));
         }
     }
-    async fn recv(mut stream: TcpStream) -> anyhow::Result<()> {
+    async fn recv(mut stream: TcpStream) -> Result<()> {
         let mut buffer = Vec::new();
         stream.read_to_end(&mut buffer).await?;
         let variant: Self = postcard::from_bytes(&buffer)?;
