@@ -5,8 +5,7 @@ use std::sync::RwLock;
 
 static DATA: RwLock<BTreeMap<String, Vec<u8>>> = RwLock::new(BTreeMap::new());
 
-#[derive(thiserror::Error, Serialize, Deserialize, Debug)]
-#[derive(Clone)]
+#[derive(thiserror::Error, Serialize, Deserialize, Debug, Clone)]
 pub(crate) enum Error {}
 
 pub(crate) fn item_get(key: &str) -> Result<Option<Vec<u8>>, Error> {

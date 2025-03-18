@@ -25,7 +25,7 @@ async fn root() -> &'static str {
 
 async fn item_get(Path(key): Path<String>) -> (StatusCode, Vec<u8>) {
     match kitsurai::item_get(&key).await {
-        Ok(value) if value.len() == 0 => (StatusCode::NOT_FOUND, Vec::new()),
+        Ok(value) if value.is_empty() => (StatusCode::NOT_FOUND, Vec::new()),
         Ok(value) => (StatusCode::OK, Vec::from(json::stringify(value) + "\n")),
         Err(e) => (StatusCode::BAD_REQUEST, format!("{e}\n").into_bytes()),
     }
