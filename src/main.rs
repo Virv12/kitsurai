@@ -5,6 +5,6 @@ mod http;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    try_join!(http::main(), kitsurai::listener("0.0.0.0:3000"))?;
+    try_join!(http::main(), kitsurai::listener())?;
     Ok(())
 }

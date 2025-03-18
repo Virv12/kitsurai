@@ -1,14 +1,12 @@
-use crate::rpc::Rpc;
+use crate::rpc::{Rpc, RpcExec, RpcRequest, RpcRequestRecv};
 use anyhow::bail;
 use serde::{Deserialize, Serialize};
-use std::net::ToSocketAddrs;
 use std::{
+    net::ToSocketAddrs,
     net::{IpAddr, SocketAddr},
     sync::LazyLock,
 };
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
-use tokio::task::JoinSet;
+use tokio::{net::TcpStream, task::JoinSet};
 
 mod rpc;
 mod store;
@@ -57,25 +55,6 @@ static PEERS: LazyLock<Vec<Peer>> = LazyLock::new(|| {
 // TODO: non so se serve veramente il più 1
 static BUCKET_SIZE: LazyLock<u64> = LazyLock::new(|| u64::MAX / PEERS.len() as u64 + 1);
 
-async fn item_get_handle(
-    item_get: ItemGet,
-    peer: &Peer,
-) -> anyhow::Result<<ItemGet as Rpc<'_>>::Response> {
-    if peer.is_self {
-        item_get.handle().await
-    } else {
-        let mut stream = TcpStream::connect(peer.addr).await?;
-        let bytes = postcard::to_allocvec(&item_get.into_variant())?;
-        stream.write_all(&bytes).await?;
-
-        // Read remote response.
-        let mut buffer = Vec::new();
-        stream.read_to_end(&mut buffer).await?;
-        let parsed: <ItemGet as Rpc<'_>>::Response = postcard::from_bytes(&buffer)?;
-        Ok(parsed.clone())
-    }
-}
-
 pub async fn item_get(key: &str) -> anyhow::Result<Vec<Option<Vec<u8>>>> {
     let index = xxhash_rust::xxh3::xxh3_64(key.as_ref()) / *BUCKET_SIZE;
     let index = index as usize;
@@ -83,12 +62,12 @@ pub async fn item_get(key: &str) -> anyhow::Result<Vec<Option<Vec<u8>>>> {
 
     let mut set = JoinSet::new();
     for peer in chosen {
-        set.spawn(item_get_handle(
+        set.spawn(
             ItemGet {
                 key: key.to_string(),
-            },
-            peer,
-        ));
+            }
+            .exec(peer),
+        );
     }
 
     let mut successes = 0;
@@ -103,31 +82,12 @@ pub async fn item_get(key: &str) -> anyhow::Result<Vec<Option<Vec<u8>>>> {
         }
 
         if successes >= NECESSARY_READ {
-            // TODO: gestisci i task che rimangono? o almeno fargli esplodere?
+            set.detach_all();
             return Ok(results);
         }
     }
 
     bail!("Failed to read from {NECESSARY_READ} nodes.")
-}
-
-async fn item_set_handle(
-    item_set: ItemSet,
-    peer: &Peer,
-) -> anyhow::Result<<ItemSet as Rpc<'_>>::Response> {
-    if peer.is_self {
-        item_set.handle().await
-    } else {
-        let mut stream = TcpStream::connect(peer.addr).await?;
-        let bytes = postcard::to_allocvec(&item_set.into_variant())?;
-        stream.write_all(&bytes).await?;
-
-        // Read remote response.
-        let mut buffer = Vec::new();
-        stream.read_to_end(&mut buffer).await?;
-        let parsed: <ItemSet as Rpc<'_>>::Response = postcard::from_bytes(&buffer)?;
-        Ok(parsed.clone())
-    }
 }
 
 pub async fn item_set(key: &str, value: Vec<u8>) -> anyhow::Result<()> {
@@ -136,13 +96,13 @@ pub async fn item_set(key: &str, value: Vec<u8>) -> anyhow::Result<()> {
 
     let mut set = JoinSet::new();
     for peer in chosen {
-        set.spawn(item_set_handle(
+        set.spawn(
             ItemSet {
                 key: key.to_string(),
                 value: value.clone(),
-            },
-            peer,
-        ));
+            }
+            .exec(peer),
+        );
     }
 
     let mut successes = 0;
@@ -153,7 +113,7 @@ pub async fn item_set(key: &str, value: Vec<u8>) -> anyhow::Result<()> {
         }
 
         if successes >= NECESSARY_WRITE {
-            // TODO: gestisci i task che rimangono? o almeno fargli esplodere?
+            set.detach_all();
             return Ok(());
         }
     }
@@ -167,21 +127,21 @@ enum Operations {
     ItemSet(ItemSet),
 }
 
-// impl RpcRequest<'_> for Operations {
-//     async fn remote(self, stream: TcpStream) -> anyhow::Result<()> {
-//         match self {
-//             Self::ItemGet(get) => get.remote(stream).await,
-//             Self::ItemSet(set) => set.remote(stream).await,
-//         }
-//     }
-// }
+impl RpcRequest for Operations {
+    async fn remote(self, stream: TcpStream) -> anyhow::Result<()> {
+        match self {
+            Self::ItemGet(get) => get.remote(stream).await,
+            Self::ItemSet(set) => set.remote(stream).await,
+        }
+    }
+}
 
 #[derive(Serialize, Deserialize)]
 struct ItemGet {
     key: String,
 }
 
-impl Rpc<'_> for ItemGet {
+impl Rpc for ItemGet {
     type Request = Operations;
     type Response = Result<Option<Vec<u8>>, store::Error>;
 
@@ -200,7 +160,7 @@ struct ItemSet {
     value: Vec<u8>,
 }
 
-impl Rpc<'_> for ItemSet {
+impl Rpc for ItemSet {
     type Request = Operations;
     type Response = Result<(), store::Error>;
 
@@ -213,34 +173,6 @@ impl Rpc<'_> for ItemSet {
     }
 }
 
-pub async fn listener<A: tokio::net::ToSocketAddrs>(addr: A) -> anyhow::Result<()> {
-    let listener = TcpListener::bind(addr).await?;
-
-    loop {
-        let (socket, _) = listener.accept().await?;
-        tokio::spawn(recv(socket));
-    }
-}
-async fn recv(mut stream: TcpStream) -> anyhow::Result<()> {
-    let mut buffer = Vec::new();
-    stream.read_to_end(&mut buffer).await?;
-    let variant: Operations = postcard::from_bytes(&buffer)?;
-    match variant {
-        Operations::ItemGet(get) => {
-            let result = get.handle().await?;
-
-            // Send result.
-            let bytes = postcard::to_allocvec(&result)?;
-            stream.write_all(&bytes).await?;
-            Ok(())
-        }
-        Operations::ItemSet(set) => {
-            let result = set.handle().await?;
-
-            // Send result.
-            let bytes = postcard::to_allocvec(&result)?;
-            stream.write_all(&bytes).await?;
-            Ok(())
-        }
-    }
+pub async fn listener() -> anyhow::Result<()> {
+    Operations::listener("0.0.0.0:3000").await
 }
