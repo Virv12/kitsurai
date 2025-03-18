@@ -25,7 +25,7 @@ pub(crate) fn item_get(key: &str) -> Result<Option<Vec<u8>>, Error> {
         let mut stmt = conn
             .prepare("SELECT value FROM store WHERE key = ?")
             .unwrap();
-        let mut rows = stmt.query([key.as_bytes()]).unwrap();
+        let mut rows = stmt.query((key,)).unwrap();
         if let Some(row) = rows.next().unwrap() {
             let value: Vec<u8> = row.get(0).unwrap();
             Ok(Some(value))
@@ -39,7 +39,7 @@ pub(crate) fn item_set(key: &str, value: Vec<u8>) -> Result<(), Error> {
     SQLITE.with(|conn| {
         conn.execute(
             "INSERT OR REPLACE INTO store (key, value) VALUES (?, ?)",
-            [key.as_bytes(), &value],
+            (key, value),
         )
         .unwrap();
     });

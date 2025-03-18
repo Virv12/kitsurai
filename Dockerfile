@@ -2,7 +2,7 @@ FROM rust AS builder
 WORKDIR /app
 COPY Cargo.toml Cargo.lock .
 COPY src src
-RUN cargo build --release
+RUN CARGO_TERM_COLOR=always cargo build --release
 
 FROM ubuntu
 WORKDIR /app
