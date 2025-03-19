@@ -4,7 +4,8 @@ use anyhow::Result;
 use axum::{
     body::Bytes,
     extract::Path,
-    http::StatusCode,
+    http::{header::CONTENT_TYPE, StatusCode},
+    response::{IntoResponse, Response},
     routing::{get, post},
     Router,
 };
@@ -68,21 +69,20 @@ impl serde_json::ser::Formatter for BytesFormatter {
     }
 }
 
-async fn item_get(Path(key): Path<String>) -> (StatusCode, Vec<u8>) {
+async fn item_get(Path(key): Path<String>) -> Response {
     match kitsurai::item_get(Bytes::from(key)).await {
         Ok(value) => {
-            let value: Vec<_> = value
-                .into_iter()
-                .map(|read| read.map(serde_bytes::ByteBuf::from))
-                .collect();
             let mut body = Vec::new();
             let mut ser = serde_json::Serializer::with_formatter(&mut body, BytesFormatter);
             value.serialize(&mut ser).unwrap();
             body.push(b'\n');
-            // TODO: missing content-type
-            (StatusCode::OK, body)
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(CONTENT_TYPE, "application/json")
+                .body(body.into())
+                .unwrap()
         }
-        Err(e) => (StatusCode::BAD_REQUEST, format!("{e}\n").into_bytes()),
+        Err(e) => (StatusCode::BAD_REQUEST, format!("{e}\n")).into_response(),
     }
 }
 
