@@ -8,15 +8,18 @@ use axum::{
 };
 use serde::Serialize;
 use tokio::net::TcpListener;
+use tokio_util::sync::CancellationToken;
 
-pub async fn main() -> Result<()> {
+pub async fn main(token: CancellationToken) -> Result<()> {
     let app = Router::new()
         .route("/", get(root))
         .route("/{*key}", get(item_get))
         .route("/{*key}", post(item_set));
 
     let listener = TcpListener::bind("0.0.0.0:8000").await?;
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(token.cancelled_owned())
+        .await?;
     Ok(())
 }
 

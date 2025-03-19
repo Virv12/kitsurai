@@ -7,6 +7,7 @@ use std::{
     time::Duration,
 };
 use tokio::{net::TcpStream, task::JoinSet, time::timeout};
+use tokio_util::sync::CancellationToken;
 
 mod rpc;
 mod store;
@@ -182,6 +183,6 @@ impl Rpc for ItemSet {
     }
 }
 
-pub async fn listener() -> anyhow::Result<()> {
-    Operations::listener("0.0.0.0:3000").await
+pub async fn listener(token: CancellationToken) -> anyhow::Result<()> {
+    Operations::listener("0.0.0.0:3000", token).await
 }

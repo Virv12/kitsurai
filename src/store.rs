@@ -1,3 +1,4 @@
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 
 fn open_connection() -> rusqlite::Connection {
@@ -22,16 +23,12 @@ pub(crate) enum Error {}
 
 pub(crate) fn item_get(key: &str) -> Result<Option<Vec<u8>>, Error> {
     SQLITE.with(|conn| {
-        let mut stmt = conn
-            .prepare("SELECT value FROM store WHERE key = ?")
-            .unwrap();
-        let mut rows = stmt.query((key,)).unwrap();
-        if let Some(row) = rows.next().unwrap() {
-            let value: Vec<u8> = row.get(0).unwrap();
-            Ok(Some(value))
-        } else {
-            Ok(None)
-        }
+        Ok(conn
+            .query_row("SELECT value FROM store WHERE key = ?", (key,), |row| {
+                row.get(0)
+            })
+            .optional()
+            .unwrap())
     })
 }
 

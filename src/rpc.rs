@@ -5,6 +5,7 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream, ToSocketAddrs},
 };
+use tokio_util::sync::CancellationToken;
 
 pub(crate) trait Rpc
 where
@@ -58,19 +59,27 @@ pub(crate) trait RpcRequest: Serialize + DeserializeOwned {
 }
 
 pub(crate) trait RpcRequestRecv: RpcRequest {
-    async fn listener<A: ToSocketAddrs>(addr: A) -> Result<()>;
+    async fn listener<A: ToSocketAddrs>(addr: A, token: CancellationToken) -> Result<()>;
     async fn recv(stream: TcpStream) -> Result<()>;
 }
 
 impl<T: RpcRequest + 'static> RpcRequestRecv for T {
-    async fn listener<A: ToSocketAddrs>(addr: A) -> Result<()> {
+    async fn listener<A: ToSocketAddrs>(addr: A, token: CancellationToken) -> Result<()> {
         let listener = TcpListener::bind(addr).await?;
 
         loop {
-            let (socket, _) = listener.accept().await?;
+            let result = tokio::select! {
+                _ = token.cancelled() => break,
+                result = listener.accept() => result,
+            };
+
+            let (socket, _) = result?;
             tokio::spawn(Self::recv(socket));
         }
+
+        Ok(())
     }
+
     async fn recv(mut stream: TcpStream) -> Result<()> {
         let mut buffer = Vec::new();
         stream.read_to_end(&mut buffer).await?;
