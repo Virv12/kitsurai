@@ -3,6 +3,7 @@ use anyhow::bail;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use std::{
+    future::Future,
     net::{IpAddr, SocketAddr, ToSocketAddrs},
     sync::LazyLock,
     time::Duration,
@@ -18,7 +19,7 @@ static NECESSARY_READ: u64 = 2;
 static NECESSARY_WRITE: u64 = 2;
 static TIMEOUT: Duration = Duration::from_secs(1);
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct Peer {
     addr: SocketAddr,
     is_self: bool,
@@ -52,6 +53,7 @@ static PEERS: LazyLock<Vec<Peer>> = LazyLock::new(|| {
     let mut circular = Vec::new();
     circular.extend_from_slice(&all);
     circular.extend_from_slice(&all[..REPLICATION as usize - 1]);
+    eprintln!("Peers: {circular:#?}");
     circular
 });
 
@@ -59,70 +61,76 @@ static PEERS: LazyLock<Vec<Peer>> = LazyLock::new(|| {
 static BUCKET_SIZE: LazyLock<u64> =
     LazyLock::new(|| u64::MAX / (PEERS.len() as u64 - (REPLICATION - 1)) + 1);
 
-fn peers_for_key(key: &str) -> &'static [Peer] {
-    let hash = xxhash_rust::xxh3::xxh3_64(key.as_ref());
+fn peers_for_key(key: &[u8]) -> &'static [Peer] {
+    let hash = xxhash_rust::xxh3::xxh3_64(key);
     let index = hash / *BUCKET_SIZE;
     eprintln!("DHT: {hash} -> {index}");
     let index = index as usize;
     &PEERS[index..index + REPLICATION as usize]
 }
 
-pub async fn item_get(key: &str) -> anyhow::Result<Vec<Option<Bytes>>> {
-    let key_bytes = Bytes::from(key.to_string());
-    let mut set = JoinSet::new();
-    for peer in peers_for_key(key) {
-        set.spawn(timeout(
-            TIMEOUT,
-            ItemGet {
-                key: key_bytes.clone(),
-            }
-            .exec(peer),
-        ));
+async fn keep_peer<O>(peer: &Peer, task: impl Future<Output = O>) -> (&Peer, O) {
+    (peer, task.await)
+}
+
+pub async fn item_get(key: Bytes) -> anyhow::Result<Vec<Option<Bytes>>> {
+    let mut set = Box::new(JoinSet::new());
+    for peer in peers_for_key(&key) {
+        let rpc = ItemGet { key: key.clone() };
+        set.spawn(keep_peer(peer, timeout(TIMEOUT, rpc.exec(peer))));
     }
 
     let mut successes = 0;
     let mut results = Vec::new();
     while let Some(res) = set.join_next().await {
-        match res.expect("Join error.") {
-            Ok(Ok(Ok(res))) => {
+        match res.expect("GET: join error") {
+            (_, Ok(Ok(Ok(res)))) => {
                 successes += 1;
                 results.push(res);
             }
-            Ok(Ok(Err(store_error))) => eprintln!("Store error: {store_error}"),
-            Ok(Err(rpc_error)) => eprintln!("Rpc error: {rpc_error}"),
-            Err(timeout_error) => eprintln!("Timeout error: {timeout_error}"),
+            (Peer { addr, is_self }, Ok(Ok(Err(store_error)))) => {
+                eprintln!("GET: store error on {addr} ({is_self}), {store_error}")
+            }
+            (Peer { addr, is_self }, Ok(Err(rpc_error))) => {
+                eprintln!("GET: rpc error on {addr} ({is_self}), {rpc_error}")
+            }
+            (Peer { addr, is_self }, Err(timeout_error)) => {
+                eprintln!("GET: timeout error on {addr} ({is_self}), {timeout_error}")
+            }
         }
 
         if successes >= NECESSARY_READ {
-            set.detach_all();
-            return Ok(results);
+            set.abort_all();
+            break;
         }
     }
 
-    bail!("Failed to read from {NECESSARY_READ} nodes.")
+    Ok(results)
 }
 
-pub async fn item_set(key: &str, value: Bytes) -> anyhow::Result<()> {
-    let key_bytes = Bytes::from(key.to_string());
+pub async fn item_set(key: Bytes, value: Bytes) -> anyhow::Result<()> {
     let mut set = JoinSet::new();
-    for peer in peers_for_key(key) {
-        set.spawn(timeout(
-            TIMEOUT,
-            ItemSet {
-                key: key_bytes.clone(),
-                value: value.clone(),
-            }
-            .exec(peer),
-        ));
+    for peer in peers_for_key(&key) {
+        let rpc = ItemSet {
+            key: key.clone(),
+            value: value.clone(),
+        };
+        set.spawn(keep_peer(peer, timeout(TIMEOUT, rpc.exec(peer))));
     }
 
     let mut successes = 0;
     while let Some(res) = set.join_next().await {
         match res.expect("Join error.") {
-            Ok(Ok(Ok(()))) => successes += 1,
-            Ok(Ok(Err(store_error))) => eprintln!("Store error: {store_error}"),
-            Ok(Err(rpc_error)) => eprintln!("Rpc error: {rpc_error}"),
-            Err(timeout_error) => eprintln!("Timeout error: {timeout_error}"),
+            (_, Ok(Ok(Ok(())))) => successes += 1,
+            (Peer { addr, is_self }, Ok(Ok(Err(store_error)))) => {
+                eprintln!("GET: store error on {addr} ({is_self}), {store_error}")
+            }
+            (Peer { addr, is_self }, Ok(Err(rpc_error))) => {
+                eprintln!("GET: rpc error on {addr} ({is_self}), {rpc_error}")
+            }
+            (Peer { addr, is_self }, Err(timeout_error)) => {
+                eprintln!("GET: timeout error on {addr} ({is_self}), {timeout_error}")
+            }
         }
 
         if successes >= NECESSARY_WRITE {

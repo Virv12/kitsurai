@@ -74,7 +74,13 @@ impl<T: RpcRequest + 'static> RpcRequestRecv for T {
             };
 
             let (socket, _) = result?;
-            tokio::spawn(Self::recv(socket));
+            tokio::spawn(async {
+                let peer = socket.peer_addr().unwrap();
+                match Self::recv(socket).await {
+                    Ok(_) => eprintln!("RPC: successfully handled for {peer}"),
+                    Err(error) => eprintln!("RPC: error while handling {peer}, {error}"),
+                };
+            });
         }
 
         Ok(())
