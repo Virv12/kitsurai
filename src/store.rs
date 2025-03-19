@@ -45,3 +45,20 @@ pub(crate) fn item_set(key: Bytes, value: Bytes) -> Result<(), Error> {
     });
     Ok(())
 }
+
+pub(crate) fn item_list() -> Result<Vec<(Bytes, Bytes)>, Error> {
+    SQLITE.with(|conn| {
+        let mut stmt = conn
+            .prepare("SELECT key, value FROM store")
+            .expect("Failed to prepare statement.");
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    Bytes::from(row.get::<_, Vec<u8>>(0).unwrap()),
+                    Bytes::from(row.get::<_, Vec<u8>>(1).unwrap()),
+                ))
+            })
+            .unwrap();
+        Ok(rows.map(Result::unwrap).collect())
+    })
+}

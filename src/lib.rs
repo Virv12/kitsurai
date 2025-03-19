@@ -1,5 +1,3 @@
-extern crate core;
-
 use crate::rpc::{Rpc, RpcExec, RpcRequest, RpcRequestRecv};
 use anyhow::bail;
 use bytes::Bytes;
@@ -136,10 +134,25 @@ pub async fn item_set(key: &str, value: Bytes) -> anyhow::Result<()> {
     bail!("Failed to write to {NECESSARY_WRITE} nodes.")
 }
 
+pub async fn visualizer_data() -> anyhow::Result<Vec<(SocketAddr, Vec<(Bytes, Bytes)>)>> {
+    let mut data = Vec::new();
+    let mut set = JoinSet::new();
+    for peer in &PEERS[..PEERS.len() - (REPLICATION as usize - 1)] {
+        set.spawn(async move { (peer.addr, ItemList {}.exec(peer).await) });
+    }
+    while let Some(res) = set.join_next().await {
+        let (addr, res) = res.expect("Join error.");
+        data.push((addr, res??));
+    }
+    Ok(data)
+}
+
 #[derive(Serialize, Deserialize)]
+#[allow(clippy::enum_variant_names)]
 enum Operations {
     ItemGet(ItemGet),
     ItemSet(ItemSet),
+    ItemList(ItemList),
 }
 
 impl RpcRequest for Operations {
@@ -147,6 +160,7 @@ impl RpcRequest for Operations {
         match self {
             Self::ItemGet(get) => get.remote(stream).await,
             Self::ItemSet(set) => set.remote(stream).await,
+            Self::ItemList(list) => list.remote(stream).await,
         }
     }
 }
@@ -185,6 +199,22 @@ impl Rpc for ItemSet {
 
     async fn handle(self) -> anyhow::Result<Self::Response> {
         Ok(store::item_set(self.key, self.value))
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct ItemList {}
+
+impl Rpc for ItemList {
+    type Request = Operations;
+    type Response = Result<Vec<(Bytes, Bytes)>, store::Error>;
+
+    fn into_variant(self) -> Self::Request {
+        Operations::ItemList(self)
+    }
+
+    async fn handle(self) -> anyhow::Result<Self::Response> {
+        Ok(store::item_list())
     }
 }
 
