@@ -59,7 +59,7 @@ impl serde_json::ser::Formatter for BytesFormatter {
                 }?;
             }
             if let Some((invalid, rest)) = rest.split_first() {
-                write!(writer, "\\u{invalid:04x}")?;
+                write!(writer, "\\x{invalid:02x}")?;
                 value = rest;
             } else {
                 break;
