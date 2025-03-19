@@ -7,26 +7,14 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-pub(crate) trait Rpc
-where
-    Self: Serialize + DeserializeOwned,
-{
+pub(crate) trait Rpc: Serialize + DeserializeOwned {
     type Request: Serialize + DeserializeOwned;
-    type Response: Serialize + DeserializeOwned + Clone;
+    type Response: Serialize + DeserializeOwned;
 
     fn into_variant(self) -> Self::Request;
+
     async fn handle(self) -> Result<Self::Response>;
-}
 
-pub(crate) trait RpcExec
-where
-    Self: Rpc,
-{
-    async fn exec(self, peer: &Peer) -> Result<Self::Response>;
-    async fn remote(self, stream: TcpStream) -> Result<()>;
-}
-
-impl<T: Rpc> RpcExec for T {
     async fn exec(self, peer: &Peer) -> Result<Self::Response> {
         if peer.is_self {
             self.handle().await
@@ -56,14 +44,7 @@ impl<T: Rpc> RpcExec for T {
 
 pub(crate) trait RpcRequest: Serialize + DeserializeOwned {
     fn remote(self, stream: TcpStream) -> impl std::future::Future<Output = Result<()>> + Send;
-}
 
-pub(crate) trait RpcRequestRecv: RpcRequest {
-    async fn listener<A: ToSocketAddrs>(addr: A, token: CancellationToken) -> Result<()>;
-    async fn recv(stream: TcpStream) -> Result<()>;
-}
-
-impl<T: RpcRequest + 'static> RpcRequestRecv for T {
     async fn listener<A: ToSocketAddrs>(addr: A, token: CancellationToken) -> Result<()> {
         let listener = TcpListener::bind(addr).await?;
 
@@ -73,11 +54,10 @@ impl<T: RpcRequest + 'static> RpcRequestRecv for T {
                 result = listener.accept() => result,
             };
 
-            let (socket, _) = result?;
-            tokio::spawn(async {
-                let peer = socket.peer_addr().unwrap();
-                match Self::recv(socket).await {
-                    Ok(_) => eprintln!("RPC: successfully handled for {peer}"),
+            let (socket, peer) = result?;
+            tokio::spawn(async move {
+                match recv::<Self>(socket).await {
+                    Ok(()) => eprintln!("RPC: successfully handled for {peer}"),
                     Err(error) => eprintln!("RPC: error while handling {peer}, {error}"),
                 };
             });
@@ -85,11 +65,11 @@ impl<T: RpcRequest + 'static> RpcRequestRecv for T {
 
         Ok(())
     }
+}
 
-    async fn recv(mut stream: TcpStream) -> Result<()> {
-        let mut buffer = Vec::new();
-        stream.read_to_end(&mut buffer).await?;
-        let variant: Self = postcard::from_bytes(&buffer)?;
-        variant.remote(stream).await
-    }
+async fn recv<T: RpcRequest>(mut stream: TcpStream) -> Result<()> {
+    let mut buffer = Vec::new();
+    stream.read_to_end(&mut buffer).await?;
+    let variant: T = postcard::from_bytes(&buffer)?;
+    variant.remote(stream).await
 }

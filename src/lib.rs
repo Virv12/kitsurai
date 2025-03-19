@@ -1,4 +1,4 @@
-use crate::rpc::{Rpc, RpcExec, RpcRequest, RpcRequestRecv};
+use crate::rpc::{Rpc, RpcRequest};
 use anyhow::bail;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
