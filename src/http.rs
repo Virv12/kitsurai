@@ -69,7 +69,7 @@ impl serde_json::ser::Formatter for BytesFormatter {
 }
 
 async fn item_get(Path(key): Path<String>) -> (StatusCode, Vec<u8>) {
-    match kitsurai::item_get(&key).await {
+    match kitsurai::item_get(Bytes::from(key)).await {
         Ok(value) => {
             let value: Vec<_> = value
                 .into_iter()
@@ -87,7 +87,7 @@ async fn item_get(Path(key): Path<String>) -> (StatusCode, Vec<u8>) {
 }
 
 async fn item_set(Path(key): Path<String>, body: Bytes) -> (StatusCode, String) {
-    match kitsurai::item_set(&key, body).await {
+    match kitsurai::item_set(Bytes::from(key), body).await {
         Ok(()) => (StatusCode::CREATED, "Item set!\n".to_string()),
         Err(e) => (StatusCode::BAD_REQUEST, format!("{e}\n")),
     }
