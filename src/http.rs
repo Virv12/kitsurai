@@ -84,7 +84,7 @@ async fn item_get(Path(key): Path<String>) -> (StatusCode, Vec<u8>) {
 }
 
 async fn item_set(Path(key): Path<String>, body: Bytes) -> (StatusCode, String) {
-    match kitsurai::item_set(&key, body.to_vec()).await {
+    match kitsurai::item_set(&key, body).await {
         Ok(()) => (StatusCode::CREATED, "Item set!\n".to_string()),
         Err(e) => (StatusCode::BAD_REQUEST, format!("{e}\n")),
     }

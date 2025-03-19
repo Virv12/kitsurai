@@ -1,5 +1,8 @@
+extern crate core;
+
 use crate::rpc::{Rpc, RpcExec, RpcRequest, RpcRequestRecv};
 use anyhow::bail;
+use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use std::{
     net::{IpAddr, SocketAddr, ToSocketAddrs},
@@ -66,13 +69,14 @@ fn peers_for_key(key: &str) -> &'static [Peer] {
     &PEERS[index..index + REPLICATION as usize]
 }
 
-pub async fn item_get(key: &str) -> anyhow::Result<Vec<Option<Vec<u8>>>> {
+pub async fn item_get(key: &str) -> anyhow::Result<Vec<Option<Bytes>>> {
+    let key_bytes = Bytes::from(key.to_string());
     let mut set = JoinSet::new();
     for peer in peers_for_key(key) {
         set.spawn(timeout(
             TIMEOUT,
             ItemGet {
-                key: key.to_string(),
+                key: key_bytes.clone(),
             }
             .exec(peer),
         ));
@@ -100,13 +104,14 @@ pub async fn item_get(key: &str) -> anyhow::Result<Vec<Option<Vec<u8>>>> {
     bail!("Failed to read from {NECESSARY_READ} nodes.")
 }
 
-pub async fn item_set(key: &str, value: Vec<u8>) -> anyhow::Result<()> {
+pub async fn item_set(key: &str, value: Bytes) -> anyhow::Result<()> {
+    let key_bytes = Bytes::from(key.to_string());
     let mut set = JoinSet::new();
     for peer in peers_for_key(key) {
         set.spawn(timeout(
             TIMEOUT,
             ItemSet {
-                key: key.to_string(),
+                key: key_bytes.clone(),
                 value: value.clone(),
             }
             .exec(peer),
@@ -148,26 +153,26 @@ impl RpcRequest for Operations {
 
 #[derive(Serialize, Deserialize)]
 struct ItemGet {
-    key: String,
+    key: Bytes,
 }
 
 impl Rpc for ItemGet {
     type Request = Operations;
-    type Response = Result<Option<Vec<u8>>, store::Error>;
+    type Response = Result<Option<Bytes>, store::Error>;
 
     fn into_variant(self) -> Self::Request {
         Operations::ItemGet(self)
     }
 
     async fn handle(self) -> anyhow::Result<Self::Response> {
-        Ok(store::item_get(&self.key))
+        Ok(store::item_get(self.key))
     }
 }
 
 #[derive(Serialize, Deserialize)]
 struct ItemSet {
-    key: String,
-    value: Vec<u8>,
+    key: Bytes,
+    value: Bytes,
 }
 
 impl Rpc for ItemSet {
@@ -179,7 +184,7 @@ impl Rpc for ItemSet {
     }
 
     async fn handle(self) -> anyhow::Result<Self::Response> {
-        Ok(store::item_set(&self.key, self.value))
+        Ok(store::item_set(self.key, self.value))
     }
 }
 

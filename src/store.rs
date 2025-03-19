@@ -1,3 +1,4 @@
+use bytes::Bytes;
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 
@@ -21,22 +22,24 @@ thread_local! {
 #[derive(thiserror::Error, Serialize, Deserialize, Debug, Clone)]
 pub(crate) enum Error {}
 
-pub(crate) fn item_get(key: &str) -> Result<Option<Vec<u8>>, Error> {
+pub(crate) fn item_get(key: Bytes) -> Result<Option<Bytes>, Error> {
     SQLITE.with(|conn| {
         Ok(conn
-            .query_row("SELECT value FROM store WHERE key = ?", (key,), |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT value FROM store WHERE key = ?",
+                (&key[..],),
+                |row| row.get(0).map(|v: Vec<u8>| Bytes::from(v)),
+            )
             .optional()
             .unwrap())
     })
 }
 
-pub(crate) fn item_set(key: &str, value: Vec<u8>) -> Result<(), Error> {
+pub(crate) fn item_set(key: Bytes, value: Bytes) -> Result<(), Error> {
     SQLITE.with(|conn| {
         conn.execute(
             "INSERT OR REPLACE INTO store (key, value) VALUES (?, ?)",
-            (key, value),
+            (&key[..], &value[..]),
         )
         .unwrap();
     });
