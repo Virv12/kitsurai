@@ -23,6 +23,7 @@ thread_local! {
 pub(crate) enum Error {}
 
 pub(crate) fn item_get(key: Bytes) -> Result<Option<Bytes>, Error> {
+    eprintln!("STORE: get {key:?}");
     SQLITE.with(|conn| {
         Ok(conn
             .query_row(
@@ -36,6 +37,7 @@ pub(crate) fn item_get(key: Bytes) -> Result<Option<Bytes>, Error> {
 }
 
 pub(crate) fn item_set(key: Bytes, value: Bytes) -> Result<(), Error> {
+    eprintln!("STORE: set {key:?}");
     SQLITE.with(|conn| {
         conn.execute(
             "INSERT OR REPLACE INTO store (key, value) VALUES (?, ?)",

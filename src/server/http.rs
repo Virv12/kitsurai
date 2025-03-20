@@ -1,15 +1,15 @@
-use std::{collections::BTreeMap, io::Write};
-
+use crate::exec;
 use anyhow::Result;
 use axum::{
     body::Bytes,
     extract::Path,
-    http::{header::CONTENT_TYPE, StatusCode},
-    response::{IntoResponse, Response},
+    http::StatusCode,
     routing::{get, post},
     Router,
 };
+use kitsurai::codec::Header;
 use serde::Serialize;
+use std::{collections::BTreeMap, io::Write};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
@@ -69,25 +69,34 @@ impl serde_json::ser::Formatter for BytesFormatter {
     }
 }
 
-async fn item_get(Path(key): Path<String>) -> Response {
-    match kitsurai::item_get(Bytes::from(key)).await {
-        Ok(value) => {
-            let mut body = Vec::new();
-            let mut ser = serde_json::Serializer::with_formatter(&mut body, BytesFormatter);
-            value.serialize(&mut ser).unwrap();
-            body.push(b'\n');
-            Response::builder()
-                .status(StatusCode::OK)
-                .header(CONTENT_TYPE, "application/json")
-                .body(body.into())
-                .unwrap()
+async fn item_get(Path(key): Path<String>) -> (StatusCode, Vec<u8>) {
+    match exec::item_get(Bytes::from(key)).await {
+        Ok(values) => {
+            let lengths: Vec<Option<u64>> = values
+                .iter()
+                .map(|r| r.as_ref().map(|bytes| bytes.len() as u64))
+                .collect();
+            match postcard::to_allocvec(&Header { lengths }) {
+                Ok(header) => {
+                    let mut serialized = header;
+                    for value in values.into_iter().flatten() {
+                        serialized.extend(value);
+                    }
+
+                    (StatusCode::OK, serialized)
+                }
+                Err(e) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("{e}\n").into_bytes(),
+                ),
+            }
         }
-        Err(e) => (StatusCode::BAD_REQUEST, format!("{e}\n")).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, format!("{e}\n").into_bytes()),
     }
 }
 
 async fn item_set(Path(key): Path<String>, body: Bytes) -> (StatusCode, String) {
-    match kitsurai::item_set(Bytes::from(key), body).await {
+    match exec::item_set(Bytes::from(key), body).await {
         Ok(()) => (StatusCode::CREATED, "Item set!\n".to_string()),
         Err(e) => (StatusCode::BAD_REQUEST, format!("{e}\n")),
     }
@@ -95,7 +104,7 @@ async fn item_set(Path(key): Path<String>, body: Bytes) -> (StatusCode, String) 
 
 async fn visualizer() -> (StatusCode, Vec<u8>) {
     async fn inner() -> Result<Vec<u8>> {
-        let mut data = kitsurai::visualizer_data().await?;
+        let mut data = exec::visualizer_data().await?;
         data.sort_by_key(|(peer, _)| *peer);
 
         let mut keys = data

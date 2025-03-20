@@ -1,8 +1,11 @@
+mod exec;
+mod http;
+mod rpc;
+mod store;
+
 use anyhow::Result;
 use tokio::{signal::unix::SignalKind, try_join};
 use tokio_util::sync::CancellationToken;
-
-mod http;
 
 async fn killer(token: CancellationToken) -> Result<()> {
     let mut sigint = tokio::signal::unix::signal(SignalKind::interrupt())?;
@@ -20,7 +23,7 @@ async fn main() -> Result<()> {
     let token = CancellationToken::new();
 
     let http = http::main(token.clone());
-    let rpc = kitsurai::listener(token.clone());
+    let rpc = exec::listener(token.clone());
     let killer = killer(token.clone());
 
     try_join!(http, rpc, killer)?;

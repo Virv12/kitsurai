@@ -1,4 +1,4 @@
-use crate::Peer;
+use crate::exec::Peer;
 use anyhow::Result;
 use serde::{de::DeserializeOwned, Serialize};
 use tokio::{
@@ -57,7 +57,7 @@ pub(crate) trait RpcRequest: Serialize + DeserializeOwned {
             let (socket, peer) = result?;
             tokio::spawn(async move {
                 match recv::<Self>(socket).await {
-                    Ok(()) => eprintln!("RPC: successfully handled for {peer}"),
+                    Ok(_) => eprintln!("RPC: successfully handled for {}", peer.ip()),
                     Err(error) => eprintln!("RPC: error while handling {peer}, {error}"),
                 };
             });
