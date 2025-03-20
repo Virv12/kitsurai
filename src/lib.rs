@@ -139,18 +139,22 @@ pub async fn item_set(key: Bytes, value: Bytes) -> anyhow::Result<()> {
         }
     }
 
-    bail!("Failed to write to {NECESSARY_WRITE} nodes.")
+    bail!("Failed to write to {NECESSARY_WRITE} nodes, only {successes} succeeded.")
 }
 
 pub async fn visualizer_data() -> anyhow::Result<Vec<(SocketAddr, Vec<(Bytes, Bytes)>)>> {
     let mut data = Vec::new();
     let mut set = JoinSet::new();
     for peer in &PEERS[..PEERS.len() - (REPLICATION as usize - 1)] {
-        set.spawn(async move { (peer.addr, ItemList {}.exec(peer).await) });
+        set.spawn(keep_peer(peer, timeout(TIMEOUT, ItemList {}.exec(peer))));
     }
     while let Some(res) = set.join_next().await {
-        let (addr, res) = res.expect("Join error.");
-        data.push((addr, res??));
+        let (peer, res) = res.expect("Join error.");
+        let res = match res {
+            Ok(Ok(Ok(res))) => res,
+            _ => Vec::new(),
+        };
+        data.push((peer.addr, res));
     }
     Ok(data)
 }

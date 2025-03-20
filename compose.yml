@@ -5,3 +5,7 @@ services:
     scale: 5
     volumes:
       - ./shared:/app/shared
+    develop:
+      watch:
+        - action: rebuild
+          path: .
