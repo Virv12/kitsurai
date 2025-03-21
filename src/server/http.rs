@@ -8,7 +8,6 @@ use axum::{
     Router,
 };
 use kitsurai::codec::Header;
-use serde::Serialize;
 use std::{collections::BTreeMap, io::Write};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
@@ -29,44 +28,6 @@ pub async fn main(token: CancellationToken) -> Result<()> {
 
 async fn root() -> &'static str {
     "Hello from Kitsurai!\n"
-}
-
-struct BytesFormatter;
-
-impl serde_json::ser::Formatter for BytesFormatter {
-    fn write_byte_array<W>(&mut self, writer: &mut W, mut value: &[u8]) -> std::io::Result<()>
-    where
-        W: ?Sized + std::io::Write,
-    {
-        writer.write_all(b"\"")?;
-        while !value.is_empty() {
-            let valid_up_to = match std::str::from_utf8(value) {
-                Ok(valid) => valid.len(),
-                Err(utf8_error) => utf8_error.valid_up_to(),
-            };
-            let (valid, rest) = value.split_at(valid_up_to);
-            for byte in valid {
-                match byte {
-                    0x08 => writer.write_all(b"\\b"),
-                    b'\t' => writer.write_all(b"\\t"),
-                    b'\n' => writer.write_all(b"\\n"),
-                    0x0C => writer.write_all(b"\\f"),
-                    b'\r' => writer.write_all(b"\\r"),
-                    b'"' => writer.write_all(b"\\\""),
-                    b'\\' => writer.write_all(b"\\\\"),
-                    ctrl @ ..=0x1F => write!(writer, "\\u{ctrl:04x}"),
-                    _ => writer.write_all(std::slice::from_ref(byte)),
-                }?;
-            }
-            if let Some((invalid, rest)) = rest.split_first() {
-                write!(writer, "\\x{invalid:02x}")?;
-                value = rest;
-            } else {
-                break;
-            }
-        }
-        writer.write_all(b"\"")
-    }
 }
 
 async fn item_get(Path(key): Path<String>) -> (StatusCode, Vec<u8>) {
@@ -129,16 +90,11 @@ async fn visualizer() -> (StatusCode, Vec<u8>) {
         writeln!(out)?;
 
         for key in keys {
-            {
-                let mut ser = serde_json::ser::Serializer::with_formatter(&mut out, BytesFormatter);
-                key.serialize(&mut ser)?;
-            }
+            write!(out, "{:?}", key)?;
             for (_, keyvalue) in &data {
                 write!(out, "$")?;
                 if let Some(value) = keyvalue.get(&key) {
-                    let mut ser =
-                        serde_json::ser::Serializer::with_formatter(&mut out, BytesFormatter);
-                    value.serialize(&mut ser)?;
+                    write!(out, "{:?}", value)?;
                 }
             }
             writeln!(out)?;

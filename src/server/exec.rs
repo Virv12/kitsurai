@@ -47,24 +47,36 @@ static PEERS: LazyLock<Vec<Peer>> = LazyLock::new(|| {
             is_self: is_local_ip(addr.ip()),
         })
         .collect();
-
-    let mut circular = Vec::new();
-    circular.extend_from_slice(&all);
-    circular.extend_from_slice(&all[..REPLICATION as usize - 1]);
-    eprintln!("Peers: {circular:#?}");
-    circular
+    all
 });
 
-// TODO: non so se serve veramente il più 1
-static BUCKET_SIZE: LazyLock<u64> =
-    LazyLock::new(|| u64::MAX / (PEERS.len() as u64 - (REPLICATION - 1)) + 1);
+struct PeersForKey {
+    idx: usize,
+    len: usize,
+}
 
-fn peers_for_key(key: &[u8]) -> &'static [Peer] {
-    let hash = xxhash_rust::xxh3::xxh3_64(key);
-    let index = hash / *BUCKET_SIZE;
-    eprintln!("DHT: {hash} -> {index}");
-    let index = index as usize;
-    &PEERS[index..index + REPLICATION as usize]
+impl PeersForKey {
+    fn from_key(key: &[u8]) -> Self {
+        let hash = xxhash_rust::xxh3::xxh3_64(key);
+        let idx = ((hash as u128 * PEERS.len() as u128) >> 64) as usize;
+        let len = REPLICATION as usize;
+        Self { idx, len }
+    }
+}
+
+impl Iterator for PeersForKey {
+    type Item = &'static Peer;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.len == 0 {
+            None
+        } else {
+            let idx = self.idx;
+            self.idx = (self.idx + 1) % PEERS.len();
+            self.len -= 1;
+            Some(&PEERS[idx])
+        }
+    }
 }
 
 async fn keep_peer<O>(peer: &Peer, task: impl Future<Output = O>) -> (&Peer, O) {
@@ -73,7 +85,7 @@ async fn keep_peer<O>(peer: &Peer, task: impl Future<Output = O>) -> (&Peer, O) 
 
 pub async fn item_get(key: Bytes) -> anyhow::Result<Vec<Option<Bytes>>> {
     let mut set = Box::new(JoinSet::new());
-    for peer in peers_for_key(&key) {
+    for peer in PeersForKey::from_key(&key) {
         let rpc = ItemGet { key: key.clone() };
         set.spawn(keep_peer(peer, timeout(TIMEOUT, rpc.exec(peer))));
     }
@@ -108,7 +120,7 @@ pub async fn item_get(key: Bytes) -> anyhow::Result<Vec<Option<Bytes>>> {
 
 pub async fn item_set(key: Bytes, value: Bytes) -> anyhow::Result<()> {
     let mut set = JoinSet::new();
-    for peer in peers_for_key(&key) {
+    for peer in PeersForKey::from_key(&key) {
         let rpc = ItemSet {
             key: key.clone(),
             value: value.clone(),
@@ -143,7 +155,7 @@ pub async fn item_set(key: Bytes, value: Bytes) -> anyhow::Result<()> {
 pub async fn visualizer_data() -> anyhow::Result<Vec<(SocketAddr, Vec<(Bytes, Bytes)>)>> {
     let mut data = Vec::new();
     let mut set = JoinSet::new();
-    for peer in &PEERS[..PEERS.len() - (REPLICATION as usize - 1)] {
+    for peer in &*PEERS {
         set.spawn(keep_peer(peer, timeout(TIMEOUT, ItemList {}.exec(peer))));
     }
     while let Some(res) = set.join_next().await {
