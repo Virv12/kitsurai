@@ -1,5 +1,6 @@
 use crate::exec;
 use anyhow::Result;
+use axum::extract::DefaultBodyLimit;
 use axum::{
     body::Bytes,
     extract::Path,
@@ -17,7 +18,7 @@ pub async fn main(token: CancellationToken) -> Result<()> {
         .route("/", get(root))
         .route("/visualizer", get(visualizer))
         .route("/{*key}", get(item_get))
-        .route("/{*key}", post(item_set));
+        .route("/{*key}", post(item_set).layer(DefaultBodyLimit::disable()));
 
     let listener = TcpListener::bind("0.0.0.0:8000").await?;
     axum::serve(listener, app)
