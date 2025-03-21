@@ -10,17 +10,17 @@ use axum::{
 };
 use kitsurai::codec::Header;
 use std::{collections::BTreeMap, io::Write};
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, ToSocketAddrs};
 use tokio_util::sync::CancellationToken;
 
-pub async fn main(token: CancellationToken) -> Result<()> {
+pub async fn main<A: ToSocketAddrs>(addr: A, token: CancellationToken) -> Result<()> {
     let app = Router::new()
         .route("/", get(root))
         .route("/visualizer", get(visualizer))
         .route("/{*key}", get(item_get))
         .route("/{*key}", post(item_set).layer(DefaultBodyLimit::disable()));
 
-    let listener = TcpListener::bind("0.0.0.0:8000").await?;
+    let listener = TcpListener::bind(addr).await?;
     axum::serve(listener, app)
         .with_graceful_shutdown(token.cancelled_owned())
         .await?;

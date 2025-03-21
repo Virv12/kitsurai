@@ -1,9 +1,11 @@
+use crate::STORE_PATH;
 use bytes::Bytes;
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 
 fn open_connection() -> rusqlite::Connection {
-    let conn = rusqlite::Connection::open("store.db").expect("Failed to open SQLite database.");
+    let path = STORE_PATH.get().expect("Store path uninitialized");
+    let conn = rusqlite::Connection::open(path).expect("Failed to open SQLite database");
     conn.execute(
         "CREATE TABLE IF NOT EXISTS store (
             key TEXT PRIMARY KEY,
@@ -52,7 +54,7 @@ pub(crate) fn item_list() -> Result<Vec<(Bytes, Bytes)>, Error> {
     SQLITE.with(|conn| {
         let mut stmt = conn
             .prepare("SELECT key, value FROM store")
-            .expect("Failed to prepare statement.");
+            .expect("Failed to prepare statement");
         let rows = stmt
             .query_map([], |row| {
                 Ok((

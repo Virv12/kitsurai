@@ -1,83 +1,18 @@
-use crate::rpc::{Rpc, RpcRequest};
-use crate::store;
+use crate::{
+    peer::{Peer, PeersForKey, PEERS},
+    rpc::{Rpc, RpcRequest},
+    store, NECESSARY_READ, NECESSARY_WRITE, TIMEOUT,
+};
 use anyhow::bail;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
-use std::{
-    future::Future,
-    net::{IpAddr, SocketAddr, ToSocketAddrs},
-    sync::LazyLock,
-    time::Duration,
+use std::{future::Future, net::SocketAddr};
+use tokio::{
+    net::{TcpStream, ToSocketAddrs as TokioToSocketAddrs},
+    task::JoinSet,
+    time::timeout,
 };
-use tokio::{net::TcpStream, task::JoinSet, time::timeout};
 use tokio_util::sync::CancellationToken;
-
-static REPLICATION: u64 = 3;
-static NECESSARY_READ: u64 = 2;
-static NECESSARY_WRITE: u64 = 2;
-static TIMEOUT: Duration = Duration::from_secs(1);
-
-#[derive(Clone, Debug)]
-pub(crate) struct Peer {
-    pub(crate) addr: SocketAddr,
-    pub(crate) is_self: bool,
-}
-
-static PEERS: LazyLock<Vec<Peer>> = LazyLock::new(|| {
-    fn is_local_ip(ip: IpAddr) -> bool {
-        let interfaces = local_ip_address::list_afinet_netifas().unwrap();
-        for (_, iface_ip) in interfaces {
-            if iface_ip == ip {
-                return true;
-            }
-        }
-
-        false
-    }
-
-    let mut all: Vec<SocketAddr> = "kitsurai:3000"
-        .to_socket_addrs()
-        .expect("Empty peers.")
-        .collect();
-    all.sort();
-    let all: Vec<Peer> = all
-        .into_iter()
-        .map(|addr| Peer {
-            addr,
-            is_self: is_local_ip(addr.ip()),
-        })
-        .collect();
-    all
-});
-
-struct PeersForKey {
-    idx: usize,
-    len: usize,
-}
-
-impl PeersForKey {
-    fn from_key(key: &[u8]) -> Self {
-        let hash = xxhash_rust::xxh3::xxh3_64(key);
-        let idx = ((hash as u128 * PEERS.len() as u128) >> 64) as usize;
-        let len = REPLICATION as usize;
-        Self { idx, len }
-    }
-}
-
-impl Iterator for PeersForKey {
-    type Item = &'static Peer;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.len == 0 {
-            None
-        } else {
-            let idx = self.idx;
-            self.idx = (self.idx + 1) % PEERS.len();
-            self.len -= 1;
-            Some(&PEERS[idx])
-        }
-    }
-}
 
 async fn keep_peer<O>(peer: &Peer, task: impl Future<Output = O>) -> (&Peer, O) {
     (peer, task.await)
@@ -130,7 +65,7 @@ pub async fn item_set(key: Bytes, value: Bytes) -> anyhow::Result<()> {
 
     let mut successes = 0;
     while let Some(res) = set.join_next().await {
-        match res.expect("Join error.") {
+        match res.expect("Join error") {
             (_, Ok(Ok(Ok(())))) => successes += 1,
             (Peer { addr, is_self }, Ok(Ok(Err(store_error)))) => {
                 eprintln!("GET: store error on {addr} ({is_self}), {store_error}")
@@ -155,11 +90,11 @@ pub async fn item_set(key: Bytes, value: Bytes) -> anyhow::Result<()> {
 pub async fn visualizer_data() -> anyhow::Result<Vec<(SocketAddr, Vec<(Bytes, Bytes)>)>> {
     let mut data = Vec::new();
     let mut set = JoinSet::new();
-    for peer in &*PEERS {
+    for peer in PEERS.get().expect("Peers uninitialized") {
         set.spawn(keep_peer(peer, timeout(TIMEOUT, ItemList {}.exec(peer))));
     }
     while let Some(res) = set.join_next().await {
-        let (peer, res) = res.expect("Join error.");
+        let (peer, res) = res.expect("Join error");
         let res = match res {
             Ok(Ok(Ok(res))) => res,
             _ => Vec::new(),
@@ -248,6 +183,9 @@ impl Rpc for ItemList {
     }
 }
 
-pub async fn listener(token: CancellationToken) -> anyhow::Result<()> {
-    Operations::listener("0.0.0.0:3000", token).await
+pub async fn listener<A: TokioToSocketAddrs>(
+    addr: A,
+    token: CancellationToken,
+) -> anyhow::Result<()> {
+    Operations::listener(addr, token).await
 }
