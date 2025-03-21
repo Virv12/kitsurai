@@ -11,7 +11,7 @@ RUN CARGO_TERM_COLOR=always cargo build --release --bins
 FROM ubuntu
 WORKDIR /app
 RUN apt update && \
-    apt install -y libsqlite3-dev curl bsdmainutils && \
+    apt install -y libsqlite3-dev curl bsdmainutils hyperfine && \
     rm -rf /var/lib/apt/lists/*
 COPY --from=builder /app/target/release/kitsurai /app/target/release/ktc /app/
 CMD ["/app/kitsurai"]
