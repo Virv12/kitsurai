@@ -2,6 +2,7 @@ use crate::rpc::{Rpc, RpcRequest};
 use crate::store;
 use anyhow::bail;
 use bytes::Bytes;
+use kitsurai::profiler::Profiler;
 use serde::{Deserialize, Serialize};
 use std::{
     future::Future,
@@ -84,6 +85,9 @@ async fn keep_peer<O>(peer: &Peer, task: impl Future<Output = O>) -> (&Peer, O) 
 }
 
 pub async fn item_get(key: Bytes) -> anyhow::Result<Vec<Option<Bytes>>> {
+    static PROFILER: LazyLock<Profiler> = LazyLock::new(|| Profiler::new("exec::item_get"));
+    let _measuring = PROFILER.start();
+
     let mut set = Box::new(JoinSet::new());
     for peer in PeersForKey::from_key(&key) {
         let rpc = ItemGet { key: key.clone() };

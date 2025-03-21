@@ -1,7 +1,9 @@
 use clap::Parser;
 use kitsurai::codec::Header;
+use kitsurai::profiler::Profiler;
 use std::ffi::OsString;
 use std::os::unix::ffi::OsStringExt;
+use std::sync::LazyLock;
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about)]
@@ -17,6 +19,9 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    static PROFILER: LazyLock<Profiler> = LazyLock::new(|| Profiler::new("ktc::main"));
+    let _measuring = PROFILER.start();
+
     let Args { server, key, value } = Args::parse();
 
     let url = format!("http://{server}/{key}");

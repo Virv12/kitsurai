@@ -1,4 +1,7 @@
+use std::sync::LazyLock;
+
 use bytes::Bytes;
+use kitsurai::profiler::Profiler;
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 
@@ -23,6 +26,9 @@ thread_local! {
 pub(crate) enum Error {}
 
 pub(crate) fn item_get(key: Bytes) -> Result<Option<Bytes>, Error> {
+    static PROFILER: LazyLock<Profiler> = LazyLock::new(|| Profiler::new("store::item_get"));
+    let _measuring = PROFILER.start();
+
     eprintln!("STORE: get {key:?}");
     SQLITE.with(|conn| {
         Ok(conn

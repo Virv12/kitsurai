@@ -7,8 +7,8 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use kitsurai::codec::Header;
-use std::{collections::BTreeMap, io::Write};
+use kitsurai::{codec::Header, profiler::Profiler};
+use std::{collections::BTreeMap, io::Write, sync::LazyLock};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
@@ -31,6 +31,9 @@ async fn root() -> &'static str {
 }
 
 async fn item_get(Path(key): Path<String>) -> (StatusCode, Vec<u8>) {
+    static PROFILER: LazyLock<Profiler> = LazyLock::new(|| Profiler::new("http::item_get"));
+    let _measuring = PROFILER.start();
+
     match exec::item_get(Bytes::from(key)).await {
         Ok(values) => {
             let lengths: Vec<Option<u64>> = values
