@@ -1,24 +1,40 @@
-use crate::STORE_PATH;
 use bytes::Bytes;
+use clap::Parser;
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
+use std::{path::PathBuf, sync::OnceLock};
 
-fn open_connection() -> rusqlite::Connection {
-    let path = STORE_PATH.get().expect("Store path uninitialized");
-    let conn = rusqlite::Connection::open(path).expect("Failed to open SQLite database");
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS store (
-            key TEXT PRIMARY KEY,
-            value BLOB
-        )",
-        [],
-    )
-    .unwrap();
-    conn
-}
+static STORE_PATH: OnceLock<PathBuf> = OnceLock::new();
 
 thread_local! {
-    static SQLITE: rusqlite::Connection = open_connection();
+    static SQLITE: rusqlite::Connection = {
+        let path = STORE_PATH.get().expect("Store path uninitialized");
+        rusqlite::Connection::open(path).expect("Failed to open SQLite database")
+    };
+}
+
+#[derive(Debug, Parser)]
+pub(crate) struct StoreCli {
+    #[arg(long, default_value = "store.db")]
+    store_path: PathBuf,
+}
+
+pub(crate) fn init(cli: StoreCli) -> anyhow::Result<()> {
+    STORE_PATH
+        .set(cli.store_path)
+        .expect("Store path already initialized");
+
+    SQLITE.with(|conn| {
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS store (
+                key TEXT PRIMARY KEY,
+                value BLOB
+            )",
+            [],
+        )
+    })?;
+
+    Ok(())
 }
 
 #[derive(thiserror::Error, Serialize, Deserialize, Debug, Clone)]

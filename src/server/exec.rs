@@ -8,7 +8,7 @@ use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use std::{future::Future, net::SocketAddr};
 use tokio::{
-    net::{TcpStream, ToSocketAddrs as TokioToSocketAddrs},
+    net::{TcpStream, ToSocketAddrs},
     task::JoinSet,
     time::timeout,
 };
@@ -183,9 +183,6 @@ impl Rpc for ItemList {
     }
 }
 
-pub async fn listener<A: TokioToSocketAddrs>(
-    addr: A,
-    token: CancellationToken,
-) -> anyhow::Result<()> {
+pub async fn listener<A: ToSocketAddrs>(addr: A, token: CancellationToken) -> anyhow::Result<()> {
     Operations::listener(addr, token).await
 }

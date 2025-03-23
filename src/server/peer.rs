@@ -1,7 +1,10 @@
 use crate::REPLICATION;
-use clap::ValueEnum;
-use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
-use std::sync::OnceLock;
+use clap::Parser;
+use std::{
+    convert::Infallible,
+    net::{IpAddr, SocketAddr, ToSocketAddrs},
+    sync::OnceLock,
+};
 
 #[derive(Clone, Debug)]
 pub struct Peer {
@@ -11,12 +14,48 @@ pub struct Peer {
 
 pub static PEERS: OnceLock<Vec<Peer>> = OnceLock::new();
 
-#[derive(ValueEnum, Clone)]
-pub enum PeerDiscoveryStrategy {
-    Dns,
-    Csv,
+#[derive(Debug, Clone)]
+pub(crate) enum Peers {
+    Dns(String),
+    List(String),
 }
 
+#[derive(Debug, Parser)]
+pub(crate) struct PeerCli {
+    #[arg(long, value_parser = parse_peers)]
+    pub(crate) peers: Peers,
+}
+
+fn parse_peers(value: &str) -> Result<Peers, Infallible> {
+    if let Some(stripped) = value.strip_prefix("dns:") {
+        Ok(Peers::Dns(stripped.to_string()))
+    } else {
+        Ok(Peers::List(value.to_string()))
+    }
+}
+
+pub(crate) fn init(cli: PeerCli, self_addr: &str) -> anyhow::Result<()> {
+    let self_addr = self_addr.to_socket_addrs()?.next().unwrap();
+    let mut peers: Vec<SocketAddr> = match cli.peers {
+        Peers::Dns(v) => v.to_socket_addrs()?.collect(),
+        Peers::List(l) => l
+            .split(',')
+            .map(|s| s.to_socket_addrs().unwrap().next().unwrap())
+            .collect(),
+    };
+    peers.sort();
+    let peers = peers
+        .into_iter()
+        .map(|addr| Peer {
+            addr,
+            is_self: is_self(self_addr, addr),
+        })
+        .collect();
+    PEERS.set(peers).expect("Peers already initialized");
+    Ok(())
+}
+
+// TODO: this could break if there are two peers with addresses 127.0.0.1:3000 and 127.0.0.2:3000
 fn is_local_ip(ip: IpAddr) -> bool {
     let interfaces = local_ip_address::list_afinet_netifas().unwrap();
     for (_, iface_ip) in interfaces {
@@ -30,43 +69,6 @@ fn is_local_ip(ip: IpAddr) -> bool {
 
 fn is_self(self_addr: SocketAddr, addr: SocketAddr) -> bool {
     addr.port() == self_addr.port() && is_local_ip(addr.ip())
-}
-
-impl PeerDiscoveryStrategy {
-    pub fn initialize<A: ToSocketAddrs>(&self, self_addr: A, value: &str) -> anyhow::Result<()> {
-        let self_addr = self_addr.to_socket_addrs()?.next().unwrap();
-
-        PEERS
-            .set(match self {
-                PeerDiscoveryStrategy::Dns => {
-                    let mut all: Vec<SocketAddr> =
-                        value.to_socket_addrs().expect("No peers in DNS").collect();
-                    all.sort();
-                    all.into_iter()
-                        .map(|addr| Peer {
-                            addr,
-                            is_self: is_self(self_addr, addr),
-                        })
-                        .collect()
-                }
-                PeerDiscoveryStrategy::Csv => value
-                    .split(",")
-                    .map(|addr| {
-                        let addr = addr
-                            .to_socket_addrs()
-                            .expect("Not an address")
-                            .next()
-                            .unwrap();
-                        Peer {
-                            addr,
-                            is_self: is_self(self_addr, addr),
-                        }
-                    })
-                    .collect(),
-            })
-            .expect("Peers already initialized");
-        Ok(())
-    }
 }
 
 pub struct PeersForKey {

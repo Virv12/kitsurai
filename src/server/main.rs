@@ -6,20 +6,15 @@ mod store;
 
 use anyhow::Result;
 use clap::{arg, Parser};
-use peer::PeerDiscoveryStrategy;
-use std::path::PathBuf;
-use std::sync::OnceLock;
 use std::time::Duration;
-use tokio::signal::unix::SignalKind;
-use tokio::try_join;
+use tokio::{signal::unix::SignalKind, try_join};
 use tokio_util::sync::CancellationToken;
 
 // Compile-time configuration.
-static REPLICATION: u64 = 3;
-static NECESSARY_READ: u64 = 2;
-static NECESSARY_WRITE: u64 = 2;
-static TIMEOUT: Duration = Duration::from_secs(1);
-static STORE_PATH: OnceLock<PathBuf> = OnceLock::new();
+const REPLICATION: u64 = 3;
+const NECESSARY_READ: u64 = 2;
+const NECESSARY_WRITE: u64 = 2;
+const TIMEOUT: Duration = Duration::from_secs(1);
 
 // Run-time configuration.
 #[derive(Parser)]
@@ -29,16 +24,13 @@ struct Cli {
     http_addr: String,
 
     #[arg(long, default_value = "0.0.0.0:3000")]
-    peer_addr: String,
+    rpc_addr: String,
 
-    #[arg(long, default_value = "store.db")]
-    store_path: PathBuf,
+    #[clap(flatten)]
+    store_cli: store::StoreCli,
 
-    #[arg(long, requires = "discovery_value", default_value = "dns")]
-    discovery_strategy: PeerDiscoveryStrategy,
-
-    #[arg(long, requires = "discovery_strategy", default_value = "kitsurai:3000")]
-    discovery_value: String,
+    #[clap(flatten)]
+    peer_cli: peer::PeerCli,
 }
 
 async fn killer(token: CancellationToken) -> Result<()> {
@@ -56,24 +48,18 @@ async fn killer(token: CancellationToken) -> Result<()> {
 async fn main() -> Result<()> {
     let Cli {
         http_addr,
-        peer_addr,
-        store_path,
-        discovery_strategy,
-        discovery_value,
+        rpc_addr,
+        store_cli,
+        peer_cli,
     } = Cli::parse();
 
-    // Initialize storage.
-    STORE_PATH
-        .set(store_path)
-        .expect("Store path already initialized");
-
-    // Initialize peers.
-    discovery_strategy.initialize(&peer_addr, &discovery_value)?;
+    store::init(store_cli)?;
+    peer::init(peer_cli, &rpc_addr)?;
 
     let token = CancellationToken::new();
     let http = http::main(&http_addr, token.clone());
-    let rpc = exec::listener(&peer_addr, token.clone());
-    let killer = killer(token.clone());
+    let rpc = exec::listener(rpc_addr, token.clone());
+    let killer = killer(token);
     try_join!(http, rpc, killer)?;
     Ok(())
 }
