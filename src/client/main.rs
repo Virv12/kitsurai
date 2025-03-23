@@ -1,7 +1,8 @@
 use clap::Parser;
 use kitsurai::codec::Header;
-use reqwest::IntoUrl;
-use std::{ffi::OsString, fs::read, os::unix::ffi::OsStringExt, path::PathBuf};
+use reqwest::{Body, IntoUrl};
+use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+use tokio::fs::File;
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about)]
@@ -19,11 +20,10 @@ struct Args {
 
     key: String,
 
-    #[arg(raw = true)]
     value: Option<OsString>,
 }
 
-async fn post(url: impl IntoUrl, value: Vec<u8>) -> anyhow::Result<()> {
+async fn post(url: impl IntoUrl, value: impl Into<Body>) -> anyhow::Result<()> {
     let client = reqwest::Client::new();
     let res = client.post(url).body(value).send().await?;
     println!("{}: {}", res.status(), res.text().await?.trim_end());
@@ -44,7 +44,7 @@ async fn main() -> anyhow::Result<()> {
 
     match (value, file) {
         (Some(input), false) => post(url, input.into_vec()).await?,
-        (Some(file), true) => post(url, read(PathBuf::from(file).canonicalize()?)?).await?,
+        (Some(file), true) => post(url, File::open(file).await?).await?,
         (None, _) => {
             let res = reqwest::get(&url).await?;
 
@@ -56,9 +56,11 @@ async fn main() -> anyhow::Result<()> {
                     if value.len() <= limit {
                         println!("{:?}", value);
                     } else {
-                        println!("Too large, skipped.");
+                        println!("{:?}...", value.slice(..limit));
                     }
                 }
+            } else {
+                println!("{}: {}", res.status(), res.text().await?);
             }
         }
     }
