@@ -9,6 +9,7 @@ use axum::{
     Router,
 };
 use kitsurai::codec::Header;
+use std::str::FromStr;
 use std::{collections::BTreeMap, io::Write};
 use tokio::net::{TcpListener, ToSocketAddrs};
 use tokio_util::sync::CancellationToken;
@@ -17,8 +18,11 @@ pub async fn main<A: ToSocketAddrs>(addr: A, token: CancellationToken) -> Result
     let app = Router::new()
         .route("/", get(root))
         .route("/visualizer", get(visualizer))
-        .route("/{*key}", get(item_get))
-        .route("/{*key}", post(item_set).layer(DefaultBodyLimit::disable()));
+        .route("/{table}/{*key}", get(item_get))
+        .route(
+            "/{table}/{*key}",
+            post(item_set).layer(DefaultBodyLimit::disable()),
+        );
 
     let listener = TcpListener::bind(addr).await?;
     axum::serve(listener, app)
@@ -31,8 +35,9 @@ async fn root() -> &'static str {
     "Hello from Kitsurai!\n"
 }
 
-async fn item_get(Path(key): Path<String>) -> (StatusCode, Vec<u8>) {
-    match exec::item_get(Bytes::from(key)).await {
+async fn item_get(Path(table): Path<String>, Path(key): Path<String>) -> (StatusCode, Vec<u8>) {
+    let table = uuid::Uuid::from_str(&table).expect("");
+    match exec::item_get(table, Bytes::from(key)).await {
         Ok(values) => {
             let lengths: Vec<Option<u64>> = values
                 .iter()

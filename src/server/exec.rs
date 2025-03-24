@@ -13,15 +13,21 @@ use tokio::{
     time::timeout,
 };
 use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
 async fn keep_peer<O>(peer: &Peer, task: impl Future<Output = O>) -> (&Peer, O) {
     (peer, task.await)
 }
 
-pub async fn item_get(key: Bytes) -> anyhow::Result<Vec<Option<Bytes>>> {
+pub async fn item_get(table: Uuid, key: Bytes) -> anyhow::Result<Vec<Option<Bytes>>> {
+    assert_eq!(table.get_version().unwrap(), uuid::Version::SortRand);
+
     let mut set = Box::new(JoinSet::new());
     for peer in peers_for_key(&key) {
-        let rpc = ItemGet { key: key.clone() };
+        let rpc = ItemGet {
+            table,
+            key: key.clone(),
+        };
         set.spawn(keep_peer(peer, timeout(TIMEOUT, rpc.exec(peer))));
     }
 
@@ -53,10 +59,13 @@ pub async fn item_get(key: Bytes) -> anyhow::Result<Vec<Option<Bytes>>> {
     Ok(results)
 }
 
-pub async fn item_set(key: Bytes, value: Bytes) -> anyhow::Result<()> {
+pub async fn item_set(table: Uuid, key: Bytes, value: Bytes) -> anyhow::Result<()> {
+    assert_eq!(table.get_version().unwrap(), uuid::Version::SortRand);
+
     let mut set = JoinSet::new();
     for peer in peers_for_key(&key) {
         let rpc = ItemSet {
+            table,
             key: key.clone(),
             value: value.clone(),
         };
@@ -132,6 +141,7 @@ impl RpcRequest for Operations {
 
 #[derive(Serialize, Deserialize)]
 struct ItemGet {
+    table: Uuid,
     key: Bytes,
 }
 
@@ -144,12 +154,13 @@ impl Rpc for ItemGet {
     }
 
     async fn handle(self) -> anyhow::Result<Self::Response> {
-        Ok(store::item_get(self.key))
+        Ok(store::item_get(self.table, self.key))
     }
 }
 
 #[derive(Serialize, Deserialize)]
 struct ItemSet {
+    table: Uuid,
     key: Bytes,
     value: Bytes,
 }
@@ -163,7 +174,7 @@ impl Rpc for ItemSet {
     }
 
     async fn handle(self) -> anyhow::Result<Self::Response> {
-        Ok(store::item_set(self.key, self.value))
+        Ok(store::item_set(self.table, self.key, self.value))
     }
 }
 

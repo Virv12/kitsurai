@@ -3,6 +3,7 @@ use clap::Parser;
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use std::{path::PathBuf, sync::OnceLock};
+use uuid::Uuid;
 
 static STORE_PATH: OnceLock<PathBuf> = OnceLock::new();
 
@@ -27,8 +28,10 @@ pub(crate) fn init(cli: StoreCli) -> anyhow::Result<()> {
     SQLITE.with(|conn| {
         conn.execute(
             "CREATE TABLE IF NOT EXISTS store (
-                key TEXT PRIMARY KEY,
-                value BLOB
+                table TEXT,
+                key TEXT,
+                value BLOB,
+                PRIMARY KEY (table, key)
             )",
             [],
         )
@@ -40,13 +43,13 @@ pub(crate) fn init(cli: StoreCli) -> anyhow::Result<()> {
 #[derive(thiserror::Error, Serialize, Deserialize, Debug, Clone)]
 pub(crate) enum Error {}
 
-pub(crate) fn item_get(key: Bytes) -> Result<Option<Bytes>, Error> {
+pub(crate) fn item_get(table: Uuid, key: Bytes) -> Result<Option<Bytes>, Error> {
     eprintln!("STORE: get {key:?}");
     SQLITE.with(|conn| {
         Ok(conn
             .query_row(
-                "SELECT value FROM store WHERE key = ?",
-                (&key[..],),
+                "SELECT value FROM store WHERE (table, key) = (?, ?)",
+                (table.as_bytes(), &key[..]),
                 |row| row.get(0).map(|v: Vec<u8>| Bytes::from(v)),
             )
             .optional()
@@ -54,12 +57,12 @@ pub(crate) fn item_get(key: Bytes) -> Result<Option<Bytes>, Error> {
     })
 }
 
-pub(crate) fn item_set(key: Bytes, value: Bytes) -> Result<(), Error> {
+pub(crate) fn item_set(table: Uuid, key: Bytes, value: Bytes) -> Result<(), Error> {
     eprintln!("STORE: set {key:?}");
     SQLITE.with(|conn| {
         conn.execute(
-            "INSERT OR REPLACE INTO store (key, value) VALUES (?, ?)",
-            (&key[..], &value[..]),
+            "INSERT OR REPLACE INTO store (table, key, value) VALUES (?, ?, ?)",
+            (table.as_bytes(), &key[..], &value[..]),
         )
         .unwrap();
     });
