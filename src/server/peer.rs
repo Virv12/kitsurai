@@ -71,35 +71,9 @@ fn is_self(self_addr: SocketAddr, addr: SocketAddr) -> bool {
     addr.port() == self_addr.port() && is_local_ip(addr.ip())
 }
 
-pub struct PeersForKey {
-    idx: usize,
-    len: usize,
-}
-
-impl PeersForKey {
-    pub fn from_key(key: &[u8]) -> Self {
-        let peers = PEERS.get().expect("Peers uninitialized");
-
-        let hash = xxhash_rust::xxh3::xxh3_64(key);
-        let idx = ((hash as u128 * peers.len() as u128) >> 64) as usize;
-        let len = REPLICATION as usize;
-        Self { idx, len }
-    }
-}
-
-impl Iterator for PeersForKey {
-    type Item = &'static Peer;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let peers = PEERS.get().expect("Peers uninitialized");
-
-        if self.len == 0 {
-            None
-        } else {
-            let idx = self.idx;
-            self.idx = (self.idx + 1) % peers.len();
-            self.len -= 1;
-            Some(&peers[idx])
-        }
-    }
+pub(crate) fn peers_for_key(key: &[u8]) -> impl Iterator<Item = &'static Peer> {
+    let peers = PEERS.get().expect("Peers uninitialized");
+    let hash = xxhash_rust::xxh3::xxh3_64(key);
+    let idx = ((hash as u128 * peers.len() as u128) >> 64) as usize;
+    peers.iter().cycle().skip(idx).take(REPLICATION)
 }

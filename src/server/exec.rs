@@ -1,5 +1,5 @@
 use crate::{
-    peer::{Peer, PeersForKey, PEERS},
+    peer::{peers_for_key, Peer, PEERS},
     rpc::{Rpc, RpcRequest},
     store, NECESSARY_READ, NECESSARY_WRITE, TIMEOUT,
 };
@@ -20,7 +20,7 @@ async fn keep_peer<O>(peer: &Peer, task: impl Future<Output = O>) -> (&Peer, O) 
 
 pub async fn item_get(key: Bytes) -> anyhow::Result<Vec<Option<Bytes>>> {
     let mut set = Box::new(JoinSet::new());
-    for peer in PeersForKey::from_key(&key) {
+    for peer in peers_for_key(&key) {
         let rpc = ItemGet { key: key.clone() };
         set.spawn(keep_peer(peer, timeout(TIMEOUT, rpc.exec(peer))));
     }
@@ -55,7 +55,7 @@ pub async fn item_get(key: Bytes) -> anyhow::Result<Vec<Option<Bytes>>> {
 
 pub async fn item_set(key: Bytes, value: Bytes) -> anyhow::Result<()> {
     let mut set = JoinSet::new();
-    for peer in PeersForKey::from_key(&key) {
+    for peer in peers_for_key(&key) {
         let rpc = ItemSet {
             key: key.clone(),
             value: value.clone(),

@@ -11,9 +11,9 @@ use tokio::{signal::unix::SignalKind, try_join};
 use tokio_util::sync::CancellationToken;
 
 // Compile-time configuration.
-const REPLICATION: u64 = 3;
-const NECESSARY_READ: u64 = 2;
-const NECESSARY_WRITE: u64 = 2;
+const REPLICATION: usize = 3;
+const NECESSARY_READ: usize = 2;
+const NECESSARY_WRITE: usize = 2;
 const TIMEOUT: Duration = Duration::from_secs(1);
 
 // Run-time configuration.
