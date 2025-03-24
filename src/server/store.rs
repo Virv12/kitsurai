@@ -28,8 +28,8 @@ pub(crate) fn init(cli: StoreCli) -> anyhow::Result<()> {
     SQLITE.with(|conn| {
         conn.execute(
             "CREATE TABLE IF NOT EXISTS store (
-                table TEXT,
-                key TEXT,
+                table BLOB,
+                key BLOB,
                 value BLOB,
                 PRIMARY KEY (table, key)
             )",

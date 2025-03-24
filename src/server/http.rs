@@ -1,18 +1,17 @@
 use crate::exec;
 use anyhow::Result;
-use axum::extract::DefaultBodyLimit;
 use axum::{
     body::Bytes,
-    extract::Path,
+    extract::{Path, DefaultBodyLimit},
     http::StatusCode,
     routing::{get, post},
     Router,
 };
 use kitsurai::codec::Header;
-use std::str::FromStr;
 use std::{collections::BTreeMap, io::Write};
 use tokio::net::{TcpListener, ToSocketAddrs};
 use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
 pub async fn main<A: ToSocketAddrs>(addr: A, token: CancellationToken) -> Result<()> {
     let app = Router::new()
@@ -35,9 +34,8 @@ async fn root() -> &'static str {
     "Hello from Kitsurai!\n"
 }
 
-async fn item_get(Path(table): Path<String>, Path(key): Path<String>) -> (StatusCode, Vec<u8>) {
-    let table = uuid::Uuid::from_str(&table).expect("");
-    match exec::item_get(table, Bytes::from(key)).await {
+async fn item_get(Path((table, key)): Path<(Uuid, Bytes)>) -> (StatusCode, Vec<u8>) {
+    match exec::item_get(table, key).await {
         Ok(values) => {
             let lengths: Vec<Option<u64>> = values
                 .iter()
@@ -62,8 +60,8 @@ async fn item_get(Path(table): Path<String>, Path(key): Path<String>) -> (Status
     }
 }
 
-async fn item_set(Path(key): Path<String>, body: Bytes) -> (StatusCode, String) {
-    match exec::item_set(Bytes::from(key), body).await {
+async fn item_set(Path((table, key)): Path<(Uuid, Bytes)>, body: Bytes) -> (StatusCode, String) {
+    match exec::item_set(table, key, body).await {
         Ok(()) => (StatusCode::CREATED, "Item set!\n".to_string()),
         Err(e) => (StatusCode::BAD_REQUEST, format!("{e}\n")),
     }

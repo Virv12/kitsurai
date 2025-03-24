@@ -3,6 +3,7 @@ use kitsurai::codec::Header;
 use reqwest::{Body, IntoUrl};
 use std::{ffi::OsString, os::unix::ffi::OsStringExt};
 use tokio::fs::File;
+use uuid::Uuid;
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about)]
@@ -18,8 +19,8 @@ struct Args {
     /// Maximum length that will be printed.
     limit: usize,
 
+    table: Uuid,
     key: String,
-
     value: Option<OsString>,
 }
 
@@ -34,13 +35,14 @@ async fn post(url: impl IntoUrl, value: impl Into<Body>) -> anyhow::Result<()> {
 async fn main() -> anyhow::Result<()> {
     let Args {
         server,
+        table,
         key,
         limit,
         value,
         file,
     } = Args::parse();
 
-    let url = format!("http://{server}/{key}");
+    let url = format!("http://{server}/{table}/{key}");
 
     match (value, file) {
         (Some(input), false) => post(url, input.into_vec()).await?,
