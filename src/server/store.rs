@@ -28,10 +28,10 @@ pub(crate) fn init(cli: StoreCli) -> anyhow::Result<()> {
     SQLITE.with(|conn| {
         conn.execute(
             "CREATE TABLE IF NOT EXISTS store (
-                table BLOB,
+                tbl BLOB,
                 key BLOB,
                 value BLOB,
-                PRIMARY KEY (table, key)
+                PRIMARY KEY (tbl, key)
             )",
             [],
         )
@@ -43,26 +43,26 @@ pub(crate) fn init(cli: StoreCli) -> anyhow::Result<()> {
 #[derive(thiserror::Error, Serialize, Deserialize, Debug, Clone)]
 pub(crate) enum Error {}
 
-pub(crate) fn item_get(table: Uuid, key: Bytes) -> Result<Option<Bytes>, Error> {
+pub(crate) fn item_get(table: Uuid, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
     eprintln!("STORE: get {key:?}");
     SQLITE.with(|conn| {
         Ok(conn
             .query_row(
-                "SELECT value FROM store WHERE (table, key) = (?, ?)",
-                (table.as_bytes(), &key[..]),
-                |row| row.get(0).map(|v: Vec<u8>| Bytes::from(v)),
+                "SELECT value FROM store WHERE (tbl, key) = (?, ?)",
+                (table.as_bytes(), key),
+                |row| row.get(0),
             )
             .optional()
             .unwrap())
     })
 }
 
-pub(crate) fn item_set(table: Uuid, key: Bytes, value: Bytes) -> Result<(), Error> {
+pub(crate) fn item_set(table: Uuid, key: &[u8], value: &[u8]) -> Result<(), Error> {
     eprintln!("STORE: set {key:?}");
     SQLITE.with(|conn| {
         conn.execute(
-            "INSERT OR REPLACE INTO store (table, key, value) VALUES (?, ?, ?)",
-            (table.as_bytes(), &key[..], &value[..]),
+            "INSERT OR REPLACE INTO store (tbl, key, value) VALUES (?, ?, ?)",
+            (table.as_bytes(), key, value),
         )
         .unwrap();
     });

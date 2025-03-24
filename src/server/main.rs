@@ -3,6 +3,7 @@ mod http;
 mod peer;
 mod rpc;
 mod store;
+mod meta;
 
 use anyhow::Result;
 use clap::{arg, Parser};

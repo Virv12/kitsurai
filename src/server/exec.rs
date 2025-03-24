@@ -1,11 +1,14 @@
+use crate::meta::Table;
 use crate::{
+    meta,
     peer::{peers_for_key, Peer, PEERS},
     rpc::{Rpc, RpcRequest},
     store, NECESSARY_READ, NECESSARY_WRITE, TIMEOUT,
 };
-use anyhow::bail;
+use anyhow::{bail, Context};
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
+use std::cmp::min;
 use std::{future::Future, net::SocketAddr};
 use tokio::{
     net::{TcpStream, ToSocketAddrs},
@@ -21,11 +24,12 @@ async fn keep_peer<O>(peer: &Peer, task: impl Future<Output = O>) -> (&Peer, O) 
 
 pub async fn item_get(table: Uuid, key: Bytes) -> anyhow::Result<Vec<Option<Bytes>>> {
     assert_eq!(table.get_version().unwrap(), uuid::Version::SortRand);
+    let table = meta::get_table(table)?.context("table not found")?;
 
     let mut set = Box::new(JoinSet::new());
     for peer in peers_for_key(&key) {
         let rpc = ItemGet {
-            table,
+            table: table.id,
             key: key.clone(),
         };
         set.spawn(keep_peer(peer, timeout(TIMEOUT, rpc.exec(peer))));
@@ -61,11 +65,12 @@ pub async fn item_get(table: Uuid, key: Bytes) -> anyhow::Result<Vec<Option<Byte
 
 pub async fn item_set(table: Uuid, key: Bytes, value: Bytes) -> anyhow::Result<()> {
     assert_eq!(table.get_version().unwrap(), uuid::Version::SortRand);
+    let table = meta::get_table(table)?.context("table not found")?;
 
     let mut set = JoinSet::new();
     for peer in peers_for_key(&key) {
         let rpc = ItemSet {
-            table,
+            table: table.id,
             key: key.clone(),
             value: value.clone(),
         };
@@ -114,20 +119,29 @@ pub async fn visualizer_data() -> anyhow::Result<Vec<(SocketAddr, Vec<(Bytes, By
 }
 
 #[derive(Serialize, Deserialize)]
-#[allow(clippy::enum_variant_names)]
 enum Operations {
     ItemGet(ItemGet),
     ItemSet(ItemSet),
     ItemList(ItemList),
+    TablePrepare(TablePrepare),
+    TableCommit(TableCommit),
+}
+
+impl Operations {
+    fn name(&self) -> &'static str {
+        match self {
+            Operations::ItemGet(_) => "item-get",
+            Operations::ItemSet(_) => "item-set",
+            Operations::ItemList(_) => "item-list",
+            Operations::TablePrepare(_) => "table-prepare",
+            Operations::TableCommit(_) => "table-commit",
+        }
+    }
 }
 
 impl RpcRequest for Operations {
     async fn remote(self, stream: TcpStream) -> anyhow::Result<()> {
-        let name = match self {
-            Operations::ItemGet(_) => "get",
-            Operations::ItemSet(_) => "set",
-            Operations::ItemList(_) => "list",
-        };
+        let name = self.name();
         let peer = stream.peer_addr()?.ip();
         eprintln!("RPC: handling {name} for {peer}");
 
@@ -135,6 +149,8 @@ impl RpcRequest for Operations {
             Self::ItemGet(get) => get.remote(stream).await,
             Self::ItemSet(set) => set.remote(stream).await,
             Self::ItemList(list) => list.remote(stream).await,
+            Self::TablePrepare(prepare) => prepare.remote(stream).await,
+            Self::TableCommit(commit) => commit.remote(stream).await,
         }
     }
 }
@@ -154,7 +170,7 @@ impl Rpc for ItemGet {
     }
 
     async fn handle(self) -> anyhow::Result<Self::Response> {
-        Ok(store::item_get(self.table, self.key))
+        Ok(store::item_get(self.table, &*self.key).map(|opt| opt.map(Bytes::from)))
     }
 }
 
@@ -174,7 +190,7 @@ impl Rpc for ItemSet {
     }
 
     async fn handle(self) -> anyhow::Result<Self::Response> {
-        Ok(store::item_set(self.table, self.key, self.value))
+        Ok(store::item_set(self.table, &*self.key, &*self.value))
     }
 }
 
@@ -196,4 +212,76 @@ impl Rpc for ItemList {
 
 pub async fn listener<A: ToSocketAddrs>(addr: A, token: CancellationToken) -> anyhow::Result<()> {
     Operations::listener(addr, token).await
+}
+
+pub async fn table_create(mut bandwidth: u64, n: u64, r: u64, w: u64) -> anyhow::Result<Uuid> {
+    let peers = PEERS.get().expect("Peers uninitialized");
+
+    let mut table = Table {
+        id: Uuid::now_v7(),
+        peers: vec![],
+        n,
+        r,
+        w,
+    };
+
+    for (index, peer) in peers.iter().enumerate() {
+        let rpc = TablePrepare { bandwidth };
+        let available = rpc.exec(peer).await?;
+        table.peers.push((index as u64, available));
+        bandwidth -= min(bandwidth, available);
+
+        if bandwidth == 0 {
+            break;
+        }
+    }
+
+    let mut set = JoinSet::new();
+    for (index, _) in &table.peers {
+        let rpc = TableCommit { table: table.clone() };
+        let peer = &peers[*index as usize];
+        set.spawn(keep_peer(peer, rpc.exec(peer)));
+    }
+    set.join_all().await;
+
+    Ok(table.id)
+}
+
+#[derive(Serialize, Deserialize)]
+struct TablePrepare {
+    bandwidth: u64,
+}
+
+impl Rpc for TablePrepare {
+    type Request = Operations;
+    type Response = u64;
+
+    fn into_variant(self) -> Self::Request {
+        Operations::TablePrepare(self)
+    }
+
+    async fn handle(self) -> anyhow::Result<Self::Response> {
+        // TODO: prepare la banda
+        Ok(self.bandwidth.min(10))
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct TableCommit {
+    table: Table,
+}
+
+impl Rpc for TableCommit {
+    type Request = Operations;
+    type Response = ();
+
+    fn into_variant(self) -> Self::Request {
+        Operations::TableCommit(self)
+    }
+
+    async fn handle(self) -> anyhow::Result<Self::Response> {
+        // TODO: commit la banda
+        meta::create_table(self.table)?;
+        Ok(())
+    }
 }

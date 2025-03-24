@@ -17,6 +17,7 @@ pub async fn main<A: ToSocketAddrs>(addr: A, token: CancellationToken) -> Result
     let app = Router::new()
         .route("/", get(root))
         .route("/visualizer", get(visualizer))
+        .route("/{table}", post(table_create))
         .route("/{table}/{*key}", get(item_get))
         .route(
             "/{table}/{*key}",
@@ -32,6 +33,11 @@ pub async fn main<A: ToSocketAddrs>(addr: A, token: CancellationToken) -> Result
 
 async fn root() -> &'static str {
     "Hello from Kitsurai!\n"
+}
+
+async fn table_create(Path(table): Path<Uuid>, data: Form()) -> (StatusCode, String) {
+    // match exec::table_create() {  }
+    todo!()
 }
 
 async fn item_get(Path((table, key)): Path<(Uuid, Bytes)>) -> (StatusCode, Vec<u8>) {
