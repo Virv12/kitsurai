@@ -51,6 +51,7 @@ pub(crate) fn list_tables() -> Result<Vec<Table>> {
         .collect())
 }
 
+#[allow(dead_code)]
 pub(crate) fn destroy_table() {
     todo!()
 }
