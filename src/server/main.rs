@@ -1,5 +1,6 @@
 mod exec;
 mod http;
+mod merkle;
 mod meta;
 mod peer;
 mod rpc;

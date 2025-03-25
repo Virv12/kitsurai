@@ -1,10 +1,11 @@
-use crate::meta::TableStatus::{Deleted, Prepared};
-use crate::peer::{Peer, PEERS, SELF_INDEX};
-use crate::{store, BANDWIDTH, PREPARE_TIME, REPLICATION};
+use crate::{
+    merkle::Merkle,
+    peer::{Peer, PEERS, SELF_INDEX},
+    store, BANDWIDTH, PREPARE_TIME, REPLICATION,
+};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::Ordering;
-use std::sync::Mutex;
+use std::sync::{atomic::Ordering, Mutex};
 use tokio::time::sleep;
 use uuid::Uuid;
 
@@ -44,31 +45,28 @@ impl Table {
     }
 }
 
-pub fn cleanup_tables() -> Result<()> {
-    let self_index = *SELF_INDEX.get().expect("self uninitialized") as u64;
+static MERKLE: Mutex<Merkle> = Mutex::new(Merkle::new());
 
+pub(crate) fn cleanup_tables() -> Result<()> {
+    let self_index = *SELF_INDEX.get().expect("self uninitialized") as u64;
     for (key, value) in store::item_list(META)? {
-        let table = postcard::from_bytes::<Table>(&value);
-        match table {
-            Ok(mut table) if table.status == TableStatus::Prepared => {
-                table.status = TableStatus::Deleted;
-                store::item_set(META, &key, &postcard::to_allocvec(&table)?)?;
+        let mut table = postcard::from_bytes::<Table>(&value).unwrap();
+        if table.status == TableStatus::Prepared {
+            table.status = TableStatus::Deleted;
+            store::item_set(META, &key, &postcard::to_allocvec(&table)?)?;
+        } else {
+            let allocated = table
+                .peers
+                .iter()
+                .filter_map(|(i, b)| if *i == self_index { Some(*b) } else { None })
+                .next();
+            if let Some(allocated) = allocated {
+                BANDWIDTH.fetch_sub(allocated, Ordering::Relaxed);
             }
-            Ok(table) => {
-                let allocated = table
-                    .peers
-                    .iter()
-                    .filter_map(|(i, b)| if *i == self_index { Some(*b) } else { None })
-                    .next();
-                if let Some(allocated) = allocated {
-                    BANDWIDTH.fetch_sub(allocated, Ordering::Relaxed);
-                }
-            }
-            Err(_err) => {
-                // TODO: set table as deleted? but we do not have its id...
-                todo!()
-            }
-        };
+
+            let data = postcard::to_allocvec(&table).unwrap();
+            MERKLE.lock().unwrap().insert(*table.id.as_bytes(), &data);
+        }
     }
     Ok(())
 }
@@ -88,7 +86,7 @@ async fn allocation_timeout(id: Uuid) {
     let _guard = LOCK.lock().expect("poisoned lock");
 
     if let Ok(Some(mut table)) = get_table(id) {
-        if table.status == Prepared {
+        if table.status == TableStatus::Prepared {
             let self_index = *SELF_INDEX.get().expect("self uninitialized") as u64;
             let allocated = table
                 .peers
@@ -99,7 +97,7 @@ async fn allocation_timeout(id: Uuid) {
 
             BANDWIDTH.fetch_add(allocated, Ordering::Relaxed);
 
-            table.status = Deleted;
+            table.status = TableStatus::Deleted;
             set_table(&table)
                 // TODO: how could we get here?
                 .expect("could not set table");
@@ -115,6 +113,7 @@ pub(crate) fn set_table(table: &Table) -> Result<()> {
     use TableStatus::*;
     let old_status = get_table(table.id)?.map(|table: Table| table.status);
 
+    // TODO: update merkle tree
     match (old_status, &table.status) {
         // Prepared
         (None, Prepared) => {
