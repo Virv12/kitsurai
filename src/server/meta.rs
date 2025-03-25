@@ -1,6 +1,6 @@
 use crate::peer::{Peer, PEERS};
 use crate::{store, REPLICATION};
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -37,9 +37,10 @@ pub(crate) fn create_table(table: &Table) -> Result<()> {
 }
 
 pub(crate) fn get_table(id: Uuid) -> Result<Option<Table>> {
-    Ok(store::item_get(META, id.as_bytes())?
-        .map(|bytes| postcard::from_bytes(bytes.as_ref()))
-        .context("table deserialization error")??)
+    Ok(match store::item_get(META, id.as_bytes())? {
+        Some(blob) => Some(postcard::from_bytes(blob.as_ref())?),
+        None => None,
+    })
 }
 
 pub(crate) fn list_tables() -> Result<Vec<Table>> {

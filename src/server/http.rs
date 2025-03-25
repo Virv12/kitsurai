@@ -104,7 +104,10 @@ async fn item_get(Path((table, key)): Path<(Uuid, Bytes)>) -> (StatusCode, Vec<u
                 ),
             }
         }
-        Err(e) => (StatusCode::BAD_REQUEST, format!("{e}\n").into_bytes()),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            format!("{e}\n{}\n", e.backtrace()).into_bytes(),
+        ),
     }
 }
 

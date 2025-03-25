@@ -43,7 +43,7 @@ pub(crate) fn init(cli: StoreCli) -> anyhow::Result<()> {
 pub(crate) enum Error {}
 
 pub(crate) fn item_get(table: Uuid, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
-    eprintln!("STORE: get {key:?}");
+    eprintln!("STORE: get from {table}");
     SQLITE.with(|conn| {
         Ok(conn
             .query_row(
@@ -57,7 +57,7 @@ pub(crate) fn item_get(table: Uuid, key: &[u8]) -> Result<Option<Vec<u8>>, Error
 }
 
 pub(crate) fn item_set(table: Uuid, key: &[u8], value: &[u8]) -> Result<(), Error> {
-    eprintln!("STORE: set {key:?}");
+    eprintln!("STORE: set in {table}");
     SQLITE.with(|conn| {
         conn.execute(
             "INSERT OR REPLACE INTO store (tbl, key, value) VALUES (?, ?, ?)",
