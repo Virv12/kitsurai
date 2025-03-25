@@ -324,6 +324,7 @@ impl Rpc for TableCommit {
 
     async fn handle(self) -> anyhow::Result<Self::Response> {
         // TODO: commit la banda
+        // TODO: return the error to the remote node?
 
         if self.table.status != TableStatus::Created {
             bail!("table status is invalid");
