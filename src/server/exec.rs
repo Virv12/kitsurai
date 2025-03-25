@@ -324,9 +324,15 @@ impl Rpc for TableCommit {
 
     async fn handle(self) -> anyhow::Result<Self::Response> {
         // TODO: commit la banda
+
         if self.table.status != TableStatus::Created {
             bail!("table status is invalid");
         }
+
+        if meta::get_table(self.table.id)?.unwrap().status != TableStatus::Prepared {
+            bail!("table is expired");
+        }
+
         meta::set_table(&self.table)?;
         Ok(())
     }
