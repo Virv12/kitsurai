@@ -1,14 +1,15 @@
-use crate::meta::Table;
+use crate::meta::{Table, TableStatus};
 use crate::{
     meta,
     peer::{Peer, PEERS},
     rpc::{Rpc, RpcRequest},
-    store, NECESSARY_READ, NECESSARY_WRITE, TIMEOUT,
+    store, NECESSARY_READ, NECESSARY_WRITE, PREPARE_TIME, TIMEOUT,
 };
 use anyhow::{bail, Context};
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use std::{future::Future, net::SocketAddr};
+use tokio::time::sleep;
 use tokio::{
     net::{TcpStream, ToSocketAddrs},
     task::JoinSet,
@@ -226,6 +227,7 @@ pub async fn table_create(mut b: u64, n: u64, r: u64, w: u64) -> anyhow::Result<
 
     let mut table = Table {
         id: Uuid::now_v7(),
+        status: TableStatus::Prepared,
         peers: vec![],
         n,
         r,
@@ -233,7 +235,10 @@ pub async fn table_create(mut b: u64, n: u64, r: u64, w: u64) -> anyhow::Result<
     };
 
     for (index, peer) in peers.iter().enumerate() {
-        let rpc = TablePrepare { bandwidth: b };
+        let rpc = TablePrepare {
+            table: table.clone(),
+            request: b,
+        };
         let available = rpc.exec(peer).await?;
         table.peers.push((index as u64, available));
         b = b.saturating_sub(available);
@@ -247,24 +252,30 @@ pub async fn table_create(mut b: u64, n: u64, r: u64, w: u64) -> anyhow::Result<
         bail!("Could not allocate enough bandwidth.");
     }
 
+    table.status = TableStatus::Created;
+
     let mut set = JoinSet::new();
+    let mut own_table = false;
     for (index, _) in &table.peers {
         let rpc = TableCommit {
             table: table.clone(),
         };
         let peer = &peers[*index as usize];
+        own_table |= peer.is_self;
         set.spawn(keep_peer(peer, rpc.exec(peer)));
     }
     set.join_all().await;
 
-    meta::create_table(&table)?;
+    if !own_table {
+        meta::set_table(&table)?;
+    }
     Ok(table.id)
 }
 
 #[derive(Serialize, Deserialize)]
 struct TablePrepare {
-    // TODO: id: Uuid,
-    bandwidth: u64,
+    table: Table,
+    request: u64,
 }
 
 impl Rpc for TablePrepare {
@@ -277,7 +288,24 @@ impl Rpc for TablePrepare {
 
     async fn handle(self) -> anyhow::Result<Self::Response> {
         // TODO: prepare la banda
-        Ok(self.bandwidth.min(10))
+        if self.table.status != TableStatus::Prepared {
+            bail!("table status is invalid");
+        }
+        meta::set_table(&self.table)?;
+
+        tokio::spawn(async move {
+            sleep(PREPARE_TIME).await;
+            if let Ok(Some(mut table)) = meta::get_table(self.table.id) {
+                if table.status == TableStatus::Prepared {
+                    table.status = TableStatus::Deleted;
+                    meta::set_table(&table).unwrap();
+                }
+            } else {
+                panic!("table should exists");
+            }
+        });
+
+        Ok(self.request.min(10))
     }
 }
 
@@ -296,7 +324,10 @@ impl Rpc for TableCommit {
 
     async fn handle(self) -> anyhow::Result<Self::Response> {
         // TODO: commit la banda
-        meta::create_table(&self.table)?;
+        if self.table.status != TableStatus::Created {
+            bail!("table status is invalid");
+        }
+        meta::set_table(&self.table)?;
         Ok(())
     }
 }

@@ -6,9 +6,19 @@ use uuid::Uuid;
 
 const META: Uuid = Uuid::new_v8(*b"kitsuraimetadata");
 
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum TableStatus {
+    Unknown,
+    Prepared,
+    Created,
+    Deleted,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct Table {
     pub(crate) id: Uuid,
+    pub(crate) status: TableStatus,
 
     /// peer's idx and peer's bandwidth
     pub(crate) peers: Vec<(u64, u64)>,
@@ -31,7 +41,25 @@ impl Table {
     }
 }
 
-pub(crate) fn create_table(table: &Table) -> Result<()> {
+pub fn cleanup_tables() -> Result<()> {
+    for (key, value) in store::item_list(META)? {
+        let table = postcard::from_bytes::<Table>(&value);
+        match table {
+            Ok(mut table) if table.status == TableStatus::Prepared => {
+                table.status = TableStatus::Deleted;
+                store::item_set(META, &key, &postcard::to_allocvec(&table)?)?;
+            }
+            Ok(_) => {}
+            Err(_err) => {
+                // TODO: set table as deleted? but we do not have its id...
+                todo!()
+            }
+        };
+    }
+    Ok(())
+}
+
+pub(crate) fn set_table(table: &Table) -> Result<()> {
     store::item_set(META, table.id.as_bytes(), &postcard::to_allocvec(table)?)?;
     Ok(())
 }

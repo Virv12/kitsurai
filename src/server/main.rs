@@ -16,6 +16,7 @@ const REPLICATION: usize = 3;
 const NECESSARY_READ: usize = 2;
 const NECESSARY_WRITE: usize = 2;
 const TIMEOUT: Duration = Duration::from_secs(1);
+const PREPARE_TIME: Duration = Duration::from_secs(60);
 
 // Run-time configuration.
 #[derive(Parser)]
@@ -57,6 +58,7 @@ async fn main() -> Result<()> {
     } = Cli::parse();
 
     store::init(store_cli)?;
+    meta::cleanup_tables()?;
     peer::init(peer_cli, &rpc_addr)?;
 
     let token = CancellationToken::new();
