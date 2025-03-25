@@ -6,17 +6,17 @@ use uuid::Uuid;
 
 static STORE_PATH: OnceLock<PathBuf> = OnceLock::new();
 
+#[derive(Debug, Parser)]
+pub(crate) struct StoreCli {
+    #[arg(long, default_value = "store.db")]
+    store_path: PathBuf,
+}
+
 thread_local! {
     static SQLITE: rusqlite::Connection = {
         let path = STORE_PATH.get().expect("Store path uninitialized");
         rusqlite::Connection::open(path).expect("Failed to open SQLite database")
     };
-}
-
-#[derive(Debug, Parser)]
-pub(crate) struct StoreCli {
-    #[arg(long, default_value = "store.db")]
-    store_path: PathBuf,
 }
 
 pub(crate) fn init(cli: StoreCli) -> anyhow::Result<()> {
@@ -68,7 +68,9 @@ pub(crate) fn item_set(table: Uuid, key: &[u8], value: &[u8]) -> Result<(), Erro
     Ok(())
 }
 
-pub(crate) fn item_list(table: Uuid) -> Result<Vec<(Vec<u8>, Vec<u8>)>, Error> {
+pub(crate) type KeyValue = (Vec<u8>, Vec<u8>);
+
+pub(crate) fn item_list(table: Uuid) -> Result<Vec<KeyValue>, Error> {
     SQLITE.with(|conn| {
         let mut stmt = conn
             .prepare("SELECT key, value FROM store where tbl = ?")

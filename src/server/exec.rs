@@ -243,6 +243,10 @@ pub async fn table_create(mut b: u64, n: u64, r: u64, w: u64) -> anyhow::Result<
         }
     }
 
+    if b != 0 {
+        bail!("Could not allocate enough bandwidth.");
+    }
+
     let mut set = JoinSet::new();
     for (index, _) in &table.peers {
         let rpc = TableCommit {
@@ -259,6 +263,7 @@ pub async fn table_create(mut b: u64, n: u64, r: u64, w: u64) -> anyhow::Result<
 
 #[derive(Serialize, Deserialize)]
 struct TablePrepare {
+    // TODO: id: Uuid,
     bandwidth: u64,
 }
 
