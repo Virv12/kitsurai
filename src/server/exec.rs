@@ -22,7 +22,7 @@ async fn keep_peer<O>(peer: &Peer, task: impl Future<Output = O>) -> (&Peer, O) 
 }
 
 pub async fn item_get(table: Uuid, key: Bytes) -> anyhow::Result<Vec<Option<Bytes>>> {
-    if (table.get_version().context("invalid table id")? != uuid::Version::SortRand) {
+    if table.get_version().context("invalid table id")? != uuid::Version::SortRand {
         bail!("table id has invalid version")
     }
 
