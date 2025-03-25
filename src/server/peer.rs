@@ -1,4 +1,3 @@
-use crate::REPLICATION;
 use clap::Parser;
 use std::{
     convert::Infallible,
@@ -69,11 +68,4 @@ fn is_local_ip(ip: IpAddr) -> bool {
 
 fn is_self(self_addr: SocketAddr, addr: SocketAddr) -> bool {
     addr.port() == self_addr.port() && is_local_ip(addr.ip())
-}
-
-pub(crate) fn peers_for_key(key: &[u8]) -> impl Iterator<Item = &'static Peer> {
-    let peers = PEERS.get().expect("Peers uninitialized");
-    let hash = xxhash_rust::xxh3::xxh3_64(key);
-    let idx = ((hash as u128 * peers.len() as u128) >> 64) as usize;
-    peers.iter().cycle().skip(idx).take(REPLICATION)
 }

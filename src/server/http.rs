@@ -1,13 +1,15 @@
-use crate::exec;
+use crate::peer::PEERS;
+use crate::{exec, meta};
 use anyhow::Result;
 use axum::{
     body::Bytes,
-    extract::{Path, DefaultBodyLimit},
+    extract::{DefaultBodyLimit, Path},
     http::StatusCode,
     routing::{get, post},
-    Router,
+    Form, Router,
 };
 use kitsurai::codec::Header;
+use serde::Deserialize;
 use std::{collections::BTreeMap, io::Write};
 use tokio::net::{TcpListener, ToSocketAddrs};
 use tokio_util::sync::CancellationToken;
@@ -15,9 +17,10 @@ use uuid::Uuid;
 
 pub async fn main<A: ToSocketAddrs>(addr: A, token: CancellationToken) -> Result<()> {
     let app = Router::new()
-        .route("/", get(root))
-        .route("/visualizer", get(visualizer))
-        .route("/{table}", post(table_create))
+        .route("/", get(table_meta))
+        .route("/", post(table_create))
+        .route("/{table}", get(item_list))
+        // .route("/{table}", delete(table_create))
         .route("/{table}/{*key}", get(item_get))
         .route(
             "/{table}/{*key}",
@@ -31,13 +34,52 @@ pub async fn main<A: ToSocketAddrs>(addr: A, token: CancellationToken) -> Result
     Ok(())
 }
 
-async fn root() -> &'static str {
-    "Hello from Kitsurai!\n"
+async fn table_meta() -> (StatusCode, String) {
+    let peers = PEERS.get().expect("peers not initialized");
+    dbg!(peers);
+
+    match meta::list_tables() {
+        Ok(tables) => (
+            StatusCode::OK,
+            tables
+                .into_iter()
+                .map(|t| {
+                    format!(
+                        "{} ({}, {}, {}) -> {}",
+                        t.id,
+                        t.n,
+                        t.r,
+                        t.w,
+                        t.peers
+                            .into_iter()
+                            .map(|(i, b)| format!("{b}@{}", peers[i as usize].addr))
+                            .collect::<Vec<String>>()
+                            .join(", ")
+                    )
+                })
+                .collect::<Vec<String>>()
+                .join("\n")
+                + "\n",
+        ),
+        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string() + "\n"),
+    }
 }
 
-async fn table_create(Path(table): Path<Uuid>, data: Form()) -> (StatusCode, String) {
-    // match exec::table_create() {  }
-    todo!()
+#[derive(Deserialize)]
+struct TableParameter {
+    b: u64,
+    n: u64,
+    r: u64,
+    w: u64,
+}
+
+async fn table_create(
+    Form(TableParameter { b, n, r, w }): Form<TableParameter>,
+) -> (StatusCode, String) {
+    match exec::table_create(b, n, r, w).await {
+        Ok(uuid) => (StatusCode::OK, uuid.to_string() + "\n"),
+        Err(err) => (StatusCode::BAD_REQUEST, err.to_string() + "\n"),
+    }
 }
 
 async fn item_get(Path((table, key)): Path<(Uuid, Bytes)>) -> (StatusCode, Vec<u8>) {
@@ -73,9 +115,9 @@ async fn item_set(Path((table, key)): Path<(Uuid, Bytes)>, body: Bytes) -> (Stat
     }
 }
 
-async fn visualizer() -> (StatusCode, Vec<u8>) {
-    async fn inner() -> Result<Vec<u8>> {
-        let mut data = exec::visualizer_data().await?;
+async fn item_list(Path(table): Path<Uuid>) -> (StatusCode, Vec<u8>) {
+    async fn inner(table: Uuid) -> Result<Vec<u8>> {
+        let mut data = exec::item_list(table).await?;
         data.sort_by_key(|(peer, _)| *peer);
 
         let mut keys = data
@@ -118,7 +160,7 @@ async fn visualizer() -> (StatusCode, Vec<u8>) {
         Ok(out)
     }
 
-    match inner().await {
+    match inner(table).await {
         Ok(out) => (StatusCode::OK, out),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,

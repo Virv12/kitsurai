@@ -1,5 +1,6 @@
-use crate::store;
-use anyhow::Result;
+use crate::peer::{Peer, PEERS};
+use crate::{store, REPLICATION};
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -16,19 +17,37 @@ pub(crate) struct Table {
     pub(crate) w: u64,
 }
 
-pub(crate) fn create_table(table: Table) -> Result<()> {
-    store::item_set(
-        META,
-        table.id.as_bytes(),
-        &postcard::to_allocvec(&table)?,
-    )?;
+impl Table {
+    pub fn peers_for_key(&self, key: &[u8]) -> impl Iterator<Item = &'static Peer> + use<'_> {
+        let peers = PEERS.get().expect("peers uninitialized");
+        let hash = xxhash_rust::xxh3::xxh3_64(key);
+        let idx = ((hash as u128 * self.peers.len() as u128) >> 64) as usize;
+        self.peers
+            .iter()
+            .cycle()
+            .skip(idx)
+            .take(REPLICATION)
+            .map(|(i, _)| &peers[*i as usize])
+    }
+}
+
+pub(crate) fn create_table(table: &Table) -> Result<()> {
+    store::item_set(META, table.id.as_bytes(), &postcard::to_allocvec(table)?)?;
     Ok(())
 }
 
 pub(crate) fn get_table(id: Uuid) -> Result<Option<Table>> {
-    let tbl = store::item_get(META, id.as_bytes())?;
-    let tbl = tbl.map(|bytes| postcard::from_bytes(bytes.as_ref()).unwrap());
-    Ok(tbl)
+    Ok(store::item_get(META, id.as_bytes())?
+        .map(|bytes| postcard::from_bytes(bytes.as_ref()))
+        .context("table deserialization error")??)
+}
+
+pub(crate) fn list_tables() -> Result<Vec<Table>> {
+    // ignore decode errors.
+    Ok(store::item_list(META)?
+        .into_iter()
+        .flat_map(|(_, value)| postcard::from_bytes(value.as_ref()))
+        .collect())
 }
 
 pub(crate) fn destroy_table() {

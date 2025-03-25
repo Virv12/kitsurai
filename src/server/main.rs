@@ -1,9 +1,9 @@
 mod exec;
 mod http;
+mod meta;
 mod peer;
 mod rpc;
 mod store;
-mod meta;
 
 use anyhow::Result;
 use clap::{arg, Parser};
@@ -47,6 +47,8 @@ async fn killer(token: CancellationToken) -> Result<()> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    pretty_env_logger::init();
+
     let Cli {
         http_addr,
         rpc_addr,

@@ -1,4 +1,3 @@
-use bytes::Bytes;
 use clap::Parser;
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
@@ -69,19 +68,21 @@ pub(crate) fn item_set(table: Uuid, key: &[u8], value: &[u8]) -> Result<(), Erro
     Ok(())
 }
 
-pub(crate) fn item_list() -> Result<Vec<(Bytes, Bytes)>, Error> {
+pub(crate) fn item_list(table: Uuid) -> Result<Vec<(Vec<u8>, Vec<u8>)>, Error> {
     SQLITE.with(|conn| {
         let mut stmt = conn
-            .prepare("SELECT key, value FROM store")
+            .prepare("SELECT key, value FROM store where tbl = ?")
             .expect("Failed to prepare statement");
+
         let rows = stmt
-            .query_map([], |row| {
+            .query_map([table.as_bytes()], |row| {
                 Ok((
-                    Bytes::from(row.get::<_, Vec<u8>>(0).unwrap()),
-                    Bytes::from(row.get::<_, Vec<u8>>(1).unwrap()),
+                    row.get::<_, Vec<u8>>(0).unwrap(),
+                    row.get::<_, Vec<u8>>(1).unwrap(),
                 ))
             })
             .unwrap();
+
         Ok(rows.map(Result::unwrap).collect())
     })
 }
