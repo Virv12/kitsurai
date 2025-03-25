@@ -7,6 +7,7 @@ mod store;
 
 use anyhow::Result;
 use clap::{arg, Parser};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::{signal::unix::SignalKind, try_join};
 use tokio_util::sync::CancellationToken;
@@ -19,6 +20,8 @@ const TIMEOUT: Duration = Duration::from_secs(1);
 const PREPARE_TIME: Duration = Duration::from_secs(60);
 
 // Run-time configuration.
+pub static BANDWIDTH: AtomicU64 = AtomicU64::new(0);
+
 #[derive(Parser)]
 #[clap(author, version, about)]
 struct Cli {
@@ -33,6 +36,9 @@ struct Cli {
 
     #[clap(flatten)]
     peer_cli: peer::PeerCli,
+
+    #[arg(short, long, default_value = "100")]
+    bandwidth: u64,
 }
 
 async fn killer(token: CancellationToken) -> Result<()> {
@@ -55,9 +61,11 @@ async fn main() -> Result<()> {
         rpc_addr,
         store_cli,
         peer_cli,
+        bandwidth,
     } = Cli::parse();
 
     store::init(store_cli)?;
+    BANDWIDTH.store(bandwidth, Ordering::Release);
     meta::cleanup_tables()?;
     peer::init(peer_cli, &rpc_addr)?;
 

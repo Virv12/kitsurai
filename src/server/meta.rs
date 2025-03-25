@@ -1,7 +1,8 @@
 use crate::peer::{Peer, PEERS};
-use crate::{store, REPLICATION};
-use anyhow::Result;
+use crate::{store, BANDWIDTH, REPLICATION};
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::Ordering;
 use uuid::Uuid;
 
 const META: Uuid = Uuid::new_v8(*b"kitsuraimetadata");
@@ -42,6 +43,15 @@ impl Table {
 }
 
 pub fn cleanup_tables() -> Result<()> {
+    let self_index = PEERS
+        .get()
+        .context("peers uninitialized")?
+        .iter()
+        .enumerate()
+        .filter_map(|(i, p)| if p.is_self { Some(i) } else { None })
+        .next()
+        .context("self if not in peers list")? as u64;
+
     for (key, value) in store::item_list(META)? {
         let table = postcard::from_bytes::<Table>(&value);
         match table {
@@ -49,7 +59,16 @@ pub fn cleanup_tables() -> Result<()> {
                 table.status = TableStatus::Deleted;
                 store::item_set(META, &key, &postcard::to_allocvec(&table)?)?;
             }
-            Ok(_) => {}
+            Ok(table) => {
+                let allocated = table
+                    .peers
+                    .iter()
+                    .filter_map(|(i, b)| if *i == self_index { Some(*b) } else { None })
+                    .next();
+                if let Some(allocated) = allocated {
+                    BANDWIDTH.fetch_sub(allocated, Ordering::AcqRel);
+                }
+            }
             Err(_err) => {
                 // TODO: set table as deleted? but we do not have its id...
                 todo!()

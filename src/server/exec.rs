@@ -3,11 +3,12 @@ use crate::{
     meta,
     peer::{Peer, PEERS},
     rpc::{Rpc, RpcRequest},
-    store, NECESSARY_READ, NECESSARY_WRITE, PREPARE_TIME, TIMEOUT,
+    store, BANDWIDTH, NECESSARY_READ, NECESSARY_WRITE, PREPARE_TIME, TIMEOUT,
 };
 use anyhow::{bail, Context};
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::Ordering;
 use std::{future::Future, net::SocketAddr};
 use tokio::time::sleep;
 use tokio::{
@@ -286,17 +287,42 @@ impl Rpc for TablePrepare {
         Operations::TablePrepare(self)
     }
 
-    async fn handle(self) -> anyhow::Result<Self::Response> {
-        // TODO: prepare la banda
+    async fn handle(mut self) -> anyhow::Result<Self::Response> {
         if self.table.status != TableStatus::Prepared {
             bail!("table status is invalid");
         }
+
+        // TODO: secondo me c'è una race condition brutta scritto così.
+        //       si fa prima con un lock globale probabilemente.
+
+        let available = BANDWIDTH.load(Ordering::Acquire);
+        let proposed = self.request.min(available);
+        match BANDWIDTH.compare_exchange(available, proposed, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => {}
+            Err(_) => {
+                bail!("race condition bandwidth allocation")
+            }
+        }
+
+        let self_index = PEERS
+            .get()
+            .expect("Peers uninitialized")
+            .iter()
+            .enumerate()
+            .filter_map(|(i, p)| match p.is_self {
+                true => Some(i as u64),
+                false => None,
+            })
+            .next()
+            .context("self is not in peer list")?;
+        self.table.peers.push((self_index, proposed));
         meta::set_table(&self.table)?;
 
         tokio::spawn(async move {
             sleep(PREPARE_TIME).await;
             if let Ok(Some(mut table)) = meta::get_table(self.table.id) {
                 if table.status == TableStatus::Prepared {
+                    BANDWIDTH.fetch_add(proposed, Ordering::AcqRel);
                     table.status = TableStatus::Deleted;
                     meta::set_table(&table).unwrap();
                 }
