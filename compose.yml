@@ -2,7 +2,7 @@ services:
   kitsurai:
     build: .
     image: kitsurai
-    command: /app/kitsurai --peers dns:kitsurai:3000
+    command: /app/ktd --peers dns:kitsurai:3000
     scale: 5
     volumes:
       - ./shared:/app/shared

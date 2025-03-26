@@ -13,5 +13,5 @@ WORKDIR /app
 RUN apt update && \
     apt install -y libsqlite3-dev curl bsdmainutils hyperfine && \
     rm -rf /var/lib/apt/lists/*
-COPY --from=builder /app/target/release/kitsurai /app/target/release/ktc /app/
-CMD ["/app/kitsurai"]
+COPY --from=builder /app/target/release/ktd /app/target/release/ktc /app/
+CMD ["/app/ktd"]
