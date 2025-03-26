@@ -42,7 +42,9 @@ pub(crate) trait Rpc: Serialize + DeserializeOwned {
     }
 }
 
-pub(crate) trait RpcRequest: Serialize + DeserializeOwned {
+pub(crate) trait RpcRequest:
+    Serialize + DeserializeOwned + std::fmt::Debug + std::marker::Send
+{
     fn remote(self, stream: TcpStream) -> impl std::future::Future<Output = Result<()>> + Send;
 
     async fn listener<A: ToSocketAddrs>(addr: A, token: CancellationToken) -> Result<()> {
@@ -71,5 +73,6 @@ async fn recv<T: RpcRequest>(mut stream: TcpStream) -> Result<()> {
     let mut buffer = Vec::new();
     stream.read_to_end(&mut buffer).await?;
     let variant: T = postcard::from_bytes(&buffer)?;
+    log::info!("Request: {:?}", variant);
     variant.remote(stream).await
 }

@@ -1,4 +1,4 @@
-use crate::exec::TableError::{Expired, Store, Unexisting, WrongStatus};
+use crate::exec::TableError::{Bandwidth, Expired, Store, Unexisting, WrongStatus};
 use crate::meta::{Table, TableStatus};
 use crate::peer::SELF_INDEX;
 use crate::{
@@ -127,7 +127,7 @@ pub async fn item_list(table: Uuid) -> anyhow::Result<Vec<(SocketAddr, Vec<(Vec<
     Ok(data)
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 enum Operations {
     ItemGet(ItemGet),
     ItemSet(ItemSet),
@@ -164,7 +164,7 @@ impl RpcRequest for Operations {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct ItemGet {
     table: Uuid,
     key: Bytes,
@@ -183,7 +183,7 @@ impl Rpc for ItemGet {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct ItemSet {
     table: Uuid,
     key: Bytes,
@@ -203,7 +203,7 @@ impl Rpc for ItemSet {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct ItemList {
     table: Uuid,
 }
@@ -235,9 +235,13 @@ enum TableError {
     Unexisting,
     #[error("expired table")]
     Expired,
+    #[error("bandwidth error")]
+    Bandwidth,
 }
 
 pub async fn table_create(mut b: u64, n: u64, r: u64, w: u64) -> anyhow::Result<Uuid> {
+    log::info!("Creating table with b={b}, n={n}, r={r}, w={w}.");
+
     let peers = PEERS.get().expect("Peers uninitialized");
 
     let mut table = Table {
@@ -249,22 +253,40 @@ pub async fn table_create(mut b: u64, n: u64, r: u64, w: u64) -> anyhow::Result<
         w,
     };
 
+    let mut allocated = 0;
+    b *= n;
     for (index, peer) in peers.iter().enumerate() {
         let rpc = TablePrepare {
             table: table.clone(),
             request: b,
         };
         let available = rpc.exec(peer).await??;
+        if available == 0 {
+            continue;
+        }
+        let available = available.min(b / n);
         table.peers.push((index as u64, available));
-        b = b.saturating_sub(available);
-
-        if b == 0 {
+        allocated += available;
+        if allocated >= b {
             break;
         }
     }
 
-    if b != 0 {
+    log::info!(
+        "Found {} peers with a total of {} bandwidth.",
+        table.peers.len(),
+        allocated
+    );
+
+    if allocated < b {
         bail!("Could not allocate enough bandwidth.");
+    }
+
+    for (_, x) in &mut table.peers {
+        let y = *x * b / allocated;
+        b -= y;
+        allocated -= *x;
+        *x = y;
     }
 
     table.status = TableStatus::Created;
@@ -287,7 +309,7 @@ pub async fn table_create(mut b: u64, n: u64, r: u64, w: u64) -> anyhow::Result<
     Ok(table.id)
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct TablePrepare {
     table: Table,
     request: u64,
@@ -332,7 +354,7 @@ impl Rpc for TablePrepare {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct TableCommit {
     table: Table,
 }
@@ -358,6 +380,27 @@ impl Rpc for TableCommit {
             if table.status != TableStatus::Prepared {
                 return Err(Expired);
             }
+
+            let self_index = *SELF_INDEX.get().expect("self uninitialized") as u64;
+            let pre_bandwidth = table
+                .peers
+                .iter()
+                .filter_map(|(i, b)| if *i == self_index { Some(*b) } else { None })
+                .next()
+                .unwrap_or(0);
+            let post_bandwidth = rpc
+                .table
+                .peers
+                .iter()
+                .filter_map(|(i, b)| if *i == self_index { Some(*b) } else { None })
+                .next()
+                .unwrap_or(0);
+
+            if post_bandwidth > pre_bandwidth {
+                return Err(Bandwidth);
+            }
+
+            BANDWIDTH.fetch_add(pre_bandwidth - post_bandwidth, Ordering::Relaxed);
 
             meta::set_table(&rpc.table).map_err(|_| Store)?;
 

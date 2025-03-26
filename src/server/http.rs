@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 pub async fn main<A: ToSocketAddrs>(addr: A, token: CancellationToken) -> Result<()> {
     let app = Router::new()
-        .route("/", get(table_meta))
+        .route("/", get(table_list))
         .route("/", post(table_create))
         .route("/{table}", get(item_list))
         // .route("/{table}", delete(table_create))
@@ -34,9 +34,8 @@ pub async fn main<A: ToSocketAddrs>(addr: A, token: CancellationToken) -> Result
     Ok(())
 }
 
-async fn table_meta() -> (StatusCode, String) {
+async fn table_list() -> (StatusCode, String) {
     let peers = PEERS.get().expect("peers not initialized");
-    dbg!(peers);
 
     match meta::list_tables() {
         Ok(tables) => (

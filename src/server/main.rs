@@ -66,7 +66,7 @@ async fn main() -> Result<()> {
 
     peer::init(peer_cli, &rpc_addr)?;
     store::init(store_cli)?;
-    BANDWIDTH.store(bandwidth, Ordering::Release);
+    BANDWIDTH.store(bandwidth, Ordering::Relaxed);
     meta::cleanup_tables()?;
 
     let token = CancellationToken::new();

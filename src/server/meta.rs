@@ -61,7 +61,7 @@ pub fn cleanup_tables() -> Result<()> {
                     .filter_map(|(i, b)| if *i == self_index { Some(*b) } else { None })
                     .next();
                 if let Some(allocated) = allocated {
-                    BANDWIDTH.fetch_sub(allocated, Ordering::AcqRel);
+                    BANDWIDTH.fetch_sub(allocated, Ordering::Relaxed);
                 }
             }
             Err(_err) => {
