@@ -1,16 +1,18 @@
+use crate::exec::TableError::{Expired, Store, Unexisting, WrongStatus};
 use crate::meta::{Table, TableStatus};
+use crate::peer::SELF_INDEX;
 use crate::{
     meta,
     peer::{Peer, PEERS},
     rpc::{Rpc, RpcRequest},
-    store, BANDWIDTH, NECESSARY_READ, NECESSARY_WRITE, PREPARE_TIME, TIMEOUT,
+    store, BANDWIDTH, NECESSARY_READ, NECESSARY_WRITE, TIMEOUT,
 };
 use anyhow::{bail, Context};
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::Ordering;
 use std::{future::Future, net::SocketAddr};
-use tokio::time::sleep;
+use thiserror::Error;
 use tokio::{
     net::{TcpStream, ToSocketAddrs},
     task::JoinSet,
@@ -223,6 +225,18 @@ pub async fn listener<A: ToSocketAddrs>(addr: A, token: CancellationToken) -> an
     Operations::listener(addr, token).await
 }
 
+#[derive(Error, Debug, Serialize, Deserialize)]
+enum TableError {
+    #[error("table does not have expected status {0:?}")]
+    WrongStatus(TableStatus),
+    #[error("could not store table")]
+    Store,
+    #[error("could not store table")]
+    Unexisting,
+    #[error("expired table")]
+    Expired,
+}
+
 pub async fn table_create(mut b: u64, n: u64, r: u64, w: u64) -> anyhow::Result<Uuid> {
     let peers = PEERS.get().expect("Peers uninitialized");
 
@@ -240,7 +254,7 @@ pub async fn table_create(mut b: u64, n: u64, r: u64, w: u64) -> anyhow::Result<
             table: table.clone(),
             request: b,
         };
-        let available = rpc.exec(peer).await?;
+        let available = rpc.exec(peer).await??;
         table.peers.push((index as u64, available));
         b = b.saturating_sub(available);
 
@@ -281,57 +295,40 @@ struct TablePrepare {
 
 impl Rpc for TablePrepare {
     type Request = Operations;
-    type Response = u64;
+    type Response = Result<u64, TableError>;
 
     fn into_variant(self) -> Self::Request {
         Operations::TablePrepare(self)
     }
 
-    async fn handle(mut self) -> anyhow::Result<Self::Response> {
-        if self.table.status != TableStatus::Prepared {
-            bail!("table status is invalid");
-        }
-
-        // TODO: secondo me c'è una race condition brutta scritto così.
-        //       si fa prima con un lock globale probabilemente.
-
-        let available = BANDWIDTH.load(Ordering::Acquire);
-        let proposed = self.request.min(available);
-        match BANDWIDTH.compare_exchange(available, proposed, Ordering::SeqCst, Ordering::SeqCst) {
-            Ok(_) => {}
-            Err(_) => {
-                bail!("race condition bandwidth allocation")
+    async fn handle(self) -> anyhow::Result<Self::Response> {
+        async fn inner(mut rpc: TablePrepare) -> Result<u64, TableError> {
+            if rpc.table.status != TableStatus::Prepared {
+                return Err(WrongStatus(TableStatus::Prepared));
             }
-        }
 
-        let self_index = PEERS
-            .get()
-            .expect("Peers uninitialized")
-            .iter()
-            .enumerate()
-            .filter_map(|(i, p)| match p.is_self {
-                true => Some(i as u64),
-                false => None,
-            })
-            .next()
-            .context("self is not in peer list")?;
-        self.table.peers.push((self_index, proposed));
-        meta::set_table(&self.table)?;
-
-        tokio::spawn(async move {
-            sleep(PREPARE_TIME).await;
-            if let Ok(Some(mut table)) = meta::get_table(self.table.id) {
-                if table.status == TableStatus::Prepared {
-                    BANDWIDTH.fetch_add(proposed, Ordering::AcqRel);
-                    table.status = TableStatus::Deleted;
-                    meta::set_table(&table).unwrap();
+            let mut available = BANDWIDTH.load(Ordering::Relaxed);
+            let proposed = loop {
+                let proposed = rpc.request.min(available);
+                match BANDWIDTH.compare_exchange(
+                    available,
+                    available - proposed,
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => break proposed,
+                    Err(new) => available = new,
                 }
-            } else {
-                panic!("table should exists");
-            }
-        });
+            };
 
-        Ok(self.request.min(10))
+            let self_index = *SELF_INDEX.get().expect("self_index uninitialized") as u64;
+            rpc.table.peers.push((self_index, proposed));
+            meta::set_table(&rpc.table).map_err(|_| Store)?;
+
+            Ok(proposed)
+        }
+
+        Ok(inner(self).await)
     }
 }
 
@@ -342,25 +339,31 @@ struct TableCommit {
 
 impl Rpc for TableCommit {
     type Request = Operations;
-    type Response = ();
+    type Response = Result<(), TableError>;
 
     fn into_variant(self) -> Self::Request {
         Operations::TableCommit(self)
     }
 
     async fn handle(self) -> anyhow::Result<Self::Response> {
-        // TODO: commit la banda
-        // TODO: return the error to the remote node?
+        async fn inner(rpc: TableCommit) -> Result<(), TableError> {
+            if rpc.table.status != TableStatus::Created {
+                return Err(WrongStatus(TableStatus::Created));
+            }
 
-        if self.table.status != TableStatus::Created {
-            bail!("table status is invalid");
+            let table = meta::get_table(rpc.table.id)
+                .map_err(|_| Store)?
+                .ok_or(Unexisting)?;
+
+            if table.status != TableStatus::Prepared {
+                return Err(Expired);
+            }
+
+            meta::set_table(&rpc.table).map_err(|_| Store)?;
+
+            Ok(())
         }
 
-        if meta::get_table(self.table.id)?.unwrap().status != TableStatus::Prepared {
-            bail!("table is expired");
-        }
-
-        meta::set_table(&self.table)?;
-        Ok(())
+        Ok(inner(self).await)
     }
 }

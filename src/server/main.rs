@@ -64,10 +64,10 @@ async fn main() -> Result<()> {
         bandwidth,
     } = Cli::parse();
 
+    peer::init(peer_cli, &rpc_addr)?;
     store::init(store_cli)?;
     BANDWIDTH.store(bandwidth, Ordering::Release);
     meta::cleanup_tables()?;
-    peer::init(peer_cli, &rpc_addr)?;
 
     let token = CancellationToken::new();
     let http = http::main(&http_addr, token.clone());

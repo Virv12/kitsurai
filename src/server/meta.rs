@@ -1,8 +1,11 @@
-use crate::peer::{Peer, PEERS};
-use crate::{store, BANDWIDTH, REPLICATION};
-use anyhow::{Context, Result};
+use crate::meta::TableStatus::{Deleted, Prepared};
+use crate::peer::{Peer, PEERS, SELF_INDEX};
+use crate::{store, BANDWIDTH, PREPARE_TIME, REPLICATION};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::Ordering;
+use std::sync::Mutex;
+use tokio::time::sleep;
 use uuid::Uuid;
 
 const META: Uuid = Uuid::new_v8(*b"kitsuraimetadata");
@@ -10,7 +13,6 @@ const META: Uuid = Uuid::new_v8(*b"kitsuraimetadata");
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum TableStatus {
-    Unknown,
     Prepared,
     Created,
     Deleted,
@@ -43,14 +45,7 @@ impl Table {
 }
 
 pub fn cleanup_tables() -> Result<()> {
-    let self_index = PEERS
-        .get()
-        .context("peers uninitialized")?
-        .iter()
-        .enumerate()
-        .filter_map(|(i, p)| if p.is_self { Some(i) } else { None })
-        .next()
-        .context("self if not in peers list")? as u64;
+    let self_index = *SELF_INDEX.get().expect("self uninitialized") as u64;
 
     for (key, value) in store::item_list(META)? {
         let table = postcard::from_bytes::<Table>(&value);
@@ -78,16 +73,76 @@ pub fn cleanup_tables() -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn set_table(table: &Table) -> Result<()> {
-    store::item_set(META, table.id.as_bytes(), &postcard::to_allocvec(table)?)?;
-    Ok(())
-}
+static LOCK: Mutex<()> = Mutex::new(());
 
 pub(crate) fn get_table(id: Uuid) -> Result<Option<Table>> {
     Ok(match store::item_get(META, id.as_bytes())? {
         Some(blob) => Some(postcard::from_bytes(blob.as_ref())?),
         None => None,
     })
+}
+
+async fn allocation_timeout(id: Uuid) {
+    sleep(PREPARE_TIME).await;
+
+    let _guard = LOCK.lock().expect("poisoned lock");
+
+    if let Ok(Some(mut table)) = get_table(id) {
+        if table.status == Prepared {
+            let self_index = *SELF_INDEX.get().expect("self uninitialized") as u64;
+            let allocated = table
+                .peers
+                .iter()
+                .find_map(|(i, b)| if *i == self_index { Some(*b) } else { None })
+                // TODO: how can we get here?
+                .expect("self not in table peers");
+
+            BANDWIDTH.fetch_add(allocated, Ordering::Relaxed);
+
+            table.status = Deleted;
+            set_table(&table)
+                // TODO: how could we get here?
+                .expect("could not set table");
+        }
+    } else {
+        panic!("table should exists");
+    }
+}
+
+pub(crate) fn set_table(table: &Table) -> Result<()> {
+    let _guard = LOCK.lock().expect("poisoned lock");
+
+    use TableStatus::*;
+    let old_status = get_table(table.id)?.map(|table: Table| table.status);
+
+    match (old_status, &table.status) {
+        // Prepared
+        (None, Prepared) => {
+            store::item_set(META, table.id.as_bytes(), &postcard::to_allocvec(table)?)?;
+            tokio::spawn(allocation_timeout(table.id));
+        }
+        (Some(Prepared), Prepared) => todo!(),
+        (Some(Created), Prepared) => todo!(),
+        (Some(Deleted), Prepared) => todo!(),
+
+        // Created
+        (None, Created) => {
+            store::item_set(META, table.id.as_bytes(), &postcard::to_allocvec(table)?)?;
+        }
+        (Some(Prepared), Created) => {
+            store::item_set(META, table.id.as_bytes(), &postcard::to_allocvec(table)?)?;
+        }
+        (Some(Created), Created) => todo!(),
+        (Some(Deleted), Created) => todo!(),
+
+        // Deleted
+        (None, Deleted) | (Some(Prepared), Deleted) | (Some(Created), Deleted) => {
+            store::item_set(META, table.id.as_bytes(), &postcard::to_allocvec(table)?)?;
+        }
+        (Some(Deleted), Deleted) => todo!(),
+    };
+
+    Ok(())
 }
 
 pub(crate) fn list_tables() -> Result<Vec<Table>> {

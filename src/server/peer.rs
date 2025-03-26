@@ -12,6 +12,7 @@ pub struct Peer {
 }
 
 pub static PEERS: OnceLock<Vec<Peer>> = OnceLock::new();
+pub static SELF_INDEX: OnceLock<usize> = OnceLock::new();
 
 #[derive(Debug, Clone)]
 pub(crate) enum Peers {
@@ -42,15 +43,26 @@ pub(crate) fn init(cli: PeerCli, self_addr: &str) -> anyhow::Result<()> {
             .map(|s| s.to_socket_addrs().unwrap().next().unwrap())
             .collect(),
     };
+
     peers.sort();
-    let peers = peers
+
+    let peers: Vec<_> = peers
         .into_iter()
         .map(|addr| Peer {
             addr,
             is_self: is_self(self_addr, addr),
         })
         .collect();
+
+    let self_index = peers
+        .iter()
+        .position(|p| p.is_self)
+        .expect("self not in peers");
+
     PEERS.set(peers).expect("Peers already initialized");
+    SELF_INDEX
+        .set(self_index)
+        .expect("self already initialized");
     Ok(())
 }
 
