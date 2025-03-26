@@ -15,6 +15,29 @@ enum TableActions {
 }
 
 #[derive(Subcommand, Debug, Clone)]
+enum ItemActions {
+    #[command(alias = "g")]
+    Get {
+        #[arg(short, long, default_value = "4096")]
+        /// Maximum length that will be printed.
+        limit: usize,
+
+        key: String,
+    },
+    #[command(alias = "s")]
+    Set {
+        #[arg(short, long, default_value = "false", requires = "value")]
+        /// Parses VALUE as a file and sends its contents.
+        file: bool,
+
+        key: String,
+        value: OsString,
+    },
+    #[command(alias = "ls")]
+    List,
+}
+
+#[derive(Subcommand, Debug, Clone)]
 enum Actions {
     #[command(alias = "t")]
     Table {
@@ -23,17 +46,10 @@ enum Actions {
     },
     #[command(alias = "i")]
     Item {
-        #[arg(short, long, default_value = "false", requires = "value")]
-        /// Parses VALUE as a file and sends its contents.
-        file: bool,
-
-        #[arg(short, long, default_value = "4096")]
-        /// Maximum length that will be printed.
-        limit: usize,
-
         table: Uuid,
-        key: String,
-        value: Option<OsString>,
+
+        #[command(subcommand)]
+        action: ItemActions,
     },
 }
 
@@ -85,34 +101,46 @@ async fn main() -> anyhow::Result<()> {
             println!("{}\n{}", res.status(), res.text().await?.trim_end());
         }
         Actions::Item {
-            file,
-            limit,
             table,
-            key,
-            value,
+            action: ItemActions::Get { limit, key },
         } => {
             let url = format!("http://{server}/{table}/{key}");
-            match (value, file) {
-                (Some(input), false) => post(url, input.into_vec()).await?,
-                (Some(file), true) => post(url, File::open(file).await?).await?,
-                (None, _) => {
-                    let res = reqwest::get(&url).await?;
-
-                    if res.status().is_success() {
-                        let bytes = res.bytes().await?;
-                        let (header, rest) = postcard::take_from_bytes::<Header>(&bytes)?;
-                        println!("{}", header);
-                        for value in header.extract(bytes.slice(bytes.len() - rest.len()..)) {
-                            if value.len() <= limit {
-                                println!("{:?}", value);
-                            } else {
-                                println!("{:?}...", value.slice(..limit));
-                            }
-                        }
+            let res = reqwest::get(&url).await?;
+            if res.status().is_success() {
+                let bytes = res.bytes().await?;
+                let (header, rest) = postcard::take_from_bytes::<Header>(&bytes)?;
+                println!("{}", header);
+                for value in header.extract(bytes.slice(bytes.len() - rest.len()..)) {
+                    if value.len() <= limit {
+                        println!("{:?}", value);
                     } else {
-                        println!("{}: {}", res.status(), res.text().await?);
+                        println!("{:?}...", value.slice(..limit));
                     }
                 }
+            } else {
+                println!("{}: {}", res.status(), res.text().await?);
+            }
+        }
+        Actions::Item {
+            table,
+            action: ItemActions::Set { file, key, value },
+        } => {
+            let url = format!("http://{server}/{table}/{key}");
+            if !file {
+                post(url, value.into_vec()).await?
+            } else {
+                post(url, File::open(value).await?).await?
+            }
+        }
+        Actions::Item {
+            table,
+            action: ItemActions::List,
+        } => {
+            let res = reqwest::get(format!("http://{server}/{table}")).await?;
+            if res.status().is_success() {
+                println!("{}", res.text().await?.trim_end());
+            } else {
+                println!("{}: {}", res.status(), res.text().await?);
             }
         }
     }
