@@ -20,10 +20,10 @@ thread_local! {
 }
 
 pub(crate) fn init(cli: StoreCli) -> anyhow::Result<()> {
+    log::info!("Initialize store at {}", cli.store_path.display());
     STORE_PATH
         .set(cli.store_path)
         .expect("Store path already initialized");
-
     SQLITE.with(|conn| {
         conn.execute(
             "CREATE TABLE IF NOT EXISTS store (
@@ -35,7 +35,6 @@ pub(crate) fn init(cli: StoreCli) -> anyhow::Result<()> {
             [],
         )
     })?;
-
     Ok(())
 }
 
@@ -43,7 +42,7 @@ pub(crate) fn init(cli: StoreCli) -> anyhow::Result<()> {
 pub(crate) enum Error {}
 
 pub(crate) fn item_get(table: Uuid, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
-    eprintln!("STORE: get from {table}");
+    log::debug!("{table} get");
     SQLITE.with(|conn| {
         Ok(conn
             .query_row(
@@ -57,7 +56,7 @@ pub(crate) fn item_get(table: Uuid, key: &[u8]) -> Result<Option<Vec<u8>>, Error
 }
 
 pub(crate) fn item_set(table: Uuid, key: &[u8], value: &[u8]) -> Result<(), Error> {
-    eprintln!("STORE: set in {table}");
+    log::debug!("{table} set");
     SQLITE.with(|conn| {
         conn.execute(
             "INSERT OR REPLACE INTO store (tbl, key, value) VALUES (?, ?, ?)",
@@ -71,6 +70,7 @@ pub(crate) fn item_set(table: Uuid, key: &[u8], value: &[u8]) -> Result<(), Erro
 pub(crate) type KeyValue = (Vec<u8>, Vec<u8>);
 
 pub(crate) fn item_list(table: Uuid) -> Result<Vec<KeyValue>, Error> {
+    log::debug!("{table} list");
     SQLITE.with(|conn| {
         let mut stmt = conn
             .prepare("SELECT key, value FROM store where tbl = ?")

@@ -68,8 +68,8 @@ impl Operations {
             let (socket, peer) = result?;
             tokio::spawn(async move {
                 match recv(socket).await {
-                    Ok(_) => eprintln!("RPC: successfully handled for {}", peer.ip()),
-                    Err(error) => eprintln!("RPC: error while handling {peer}, {error}"),
+                    Ok(_) => {}
+                    Err(error) => log::debug!("error while handling {peer}, {error}"),
                 };
             });
         }

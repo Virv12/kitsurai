@@ -10,7 +10,7 @@ use crate::exec::Operations;
 use anyhow::Result;
 use clap::{arg, Parser};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::{io::Write, time::Duration};
 use tokio::net::TcpListener;
 use tokio::{signal::unix::SignalKind, try_join};
 use tokio_util::sync::CancellationToken;
@@ -45,8 +45,8 @@ async fn killer(token: CancellationToken) -> Result<()> {
     let mut sigint = tokio::signal::unix::signal(SignalKind::interrupt())?;
     let mut sigterm = tokio::signal::unix::signal(SignalKind::terminate())?;
     tokio::select! {
-        _ = sigint.recv() => println!("Received SIGINT."),
-        _ = sigterm.recv() => println!("Received SIGTERM."),
+        _ = sigint.recv() => log::info!("Received SIGINT."),
+        _ = sigterm.recv() => log::info!("Received SIGTERM."),
     }
     token.cancel();
     Ok(())
@@ -54,8 +54,6 @@ async fn killer(token: CancellationToken) -> Result<()> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    pretty_env_logger::init();
-
     let Cli {
         http_addr,
         rpc_addr,
@@ -63,6 +61,26 @@ async fn main() -> Result<()> {
         peer_cli,
         bandwidth,
     } = Cli::parse();
+
+    let rpc_addr2 = rpc_addr.clone();
+    env_logger::Builder::from_default_env()
+        .format(move |buf, record| {
+            let s_addr = anstyle::Style::new().dimmed();
+
+            let s_lvl = buf.default_level_style(record.level());
+            let lvl = record.level();
+
+            let s_tgt = anstyle::Style::new().bold();
+            let tgt = record.target();
+
+            let args = record.args();
+
+            writeln!(
+                buf,
+                "{s_addr}{rpc_addr2}{s_addr:#} {s_lvl}{lvl:5}{s_lvl:#} {s_tgt}{tgt:16}{s_tgt:#} | {args}"
+            )
+        })
+        .init();
 
     let listener = TcpListener::bind(rpc_addr).await?;
     peer::init(peer_cli, listener.local_addr()?);

@@ -72,6 +72,7 @@ static MERKLE: Mutex<Merkle> = Mutex::new(Merkle::new());
 
 impl Table {
     pub(crate) fn load(id: Uuid) -> Result<Option<Self>> {
+        log::debug!("{id} load");
         let blob = store::item_get(META, id.as_bytes())?;
         let table = blob.map(|blob| Self {
             id,
@@ -81,6 +82,7 @@ impl Table {
     }
 
     pub(crate) fn list() -> Result<Vec<Self>> {
+        log::debug!("list");
         let tables = store::item_list(META)?
             .into_iter()
             .map(|(key, value)| Self {
@@ -93,6 +95,7 @@ impl Table {
     }
 
     pub(crate) fn save(&self) -> Result<()> {
+        log::debug!("{} save", self.id);
         let _guard = LOCK.lock().expect("poisoned lock");
         let blob = postcard::to_allocvec(&self.status)?;
         store::item_set(META, self.id.as_bytes(), &blob)?;
@@ -106,6 +109,7 @@ impl Table {
     }
 
     pub(crate) fn delete_if_prepared(id: Uuid) {
+        log::debug!("{id} delete_if_prepared");
         let _guard = LOCK.lock().expect("poisoned lock");
         let mut table = Table::load(id).ok().flatten().expect("table should exists");
 
@@ -118,7 +122,9 @@ impl Table {
         }
     }
 }
+
 pub(crate) fn init() {
+    log::info!("Initialize meta");
     for mut table in Table::list().expect("could not get table list") {
         match table.status {
             TableStatus::Prepared { .. } => {

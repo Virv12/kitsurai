@@ -115,6 +115,7 @@ impl Rpc for TablePrepare {
 
     async fn handle(self) -> anyhow::Result<Self::Response> {
         async fn inner(rpc: TablePrepare) -> Result<u64, TableError> {
+            log::info!("{} prepare", rpc.id);
             let mut available = BANDWIDTH.load(Ordering::Relaxed);
             let proposed = loop {
                 let proposed = rpc.request.min(available);
@@ -172,6 +173,7 @@ impl Rpc for TableCommit {
 
     async fn handle(self) -> anyhow::Result<Self::Response> {
         async fn inner(rpc: TableCommit) -> Result<(), TableError> {
+            log::info!("{} commit", rpc.id);
             let table = Table::load(rpc.id).map_err(|_| Store)?.ok_or(NotPrepared)?;
 
             let TableStatus::Prepared { allocated } = table.status else {
@@ -199,7 +201,9 @@ impl Rpc for TableCommit {
             .save()
             .map_err(|_| Store)?;
 
-            PENDING.lock().expect("poisoned lock").remove(&rpc.id);
+            if let Some(task) = PENDING.lock().expect("poisoned lock").remove(&rpc.id) {
+                task.abort();
+            }
             Ok(())
         }
 

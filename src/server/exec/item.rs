@@ -31,7 +31,7 @@ pub async fn item_get(id: Uuid, key: Bytes) -> Result<Vec<Option<Bytes>>> {
     let mut successes = 0;
     let mut results = Vec::new();
     while let Some(res) = set.join_next().await {
-        match res.expect("GET: join error") {
+        match res.expect("join error") {
             (_, Ok(Ok(Ok(res)))) => {
                 successes += 1;
                 results.push(res);
