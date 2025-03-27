@@ -15,4 +15,5 @@ RUN apt update && \
     rm -rf /var/lib/apt/lists/*
 COPY --from=builder /app/target/release/ktd /app/target/release/ktc /app/
 ENV RUST_BACKTRACE=full
+ENV RUST_LOG="ktd=debug,warn"
 CMD ["/app/ktd"]

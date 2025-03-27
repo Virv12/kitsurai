@@ -1,7 +1,7 @@
 pub(crate) mod item;
 pub(crate) mod table;
 
-use crate::exec::table::{TableCommit, TablePrepare};
+use crate::exec::table::{TableCommit, TableDelete, TablePrepare};
 use crate::{
     exec::item::{ItemGet, ItemList, ItemSet},
     meta::{Table, TableData, TableParams, TableStatus},
@@ -27,6 +27,7 @@ pub(crate) enum Operations {
     ItemList(ItemList),
     TablePrepare(TablePrepare),
     TableCommit(TableCommit),
+    TableDelete(TableDelete),
 }
 
 impl Operations {
@@ -37,6 +38,7 @@ impl Operations {
             Operations::ItemList(_) => "item-list",
             Operations::TablePrepare(_) => "table-prepare",
             Operations::TableCommit(_) => "table-commit",
+            Operations::TableDelete(_) => "table-delete",
         }
     }
 
@@ -56,6 +58,7 @@ impl Operations {
                 Operations::ItemList(list) => list.remote(stream).await,
                 Operations::TablePrepare(prepare) => prepare.remote(stream).await,
                 Operations::TableCommit(commit) => commit.remote(stream).await,
+                Operations::TableDelete(delete) => delete.remote(stream).await,
             }
         }
 

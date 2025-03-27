@@ -1,12 +1,15 @@
 use clap::Parser;
+use rand::Rng;
 use std::{
     convert::Infallible,
     net::{IpAddr, SocketAddr, ToSocketAddrs},
     sync::OnceLock,
 };
+use uuid::Uuid;
 
 static PEERS: OnceLock<Vec<Peer>> = OnceLock::new();
 static LOCAL_INDEX: OnceLock<usize> = OnceLock::new();
+static AVAILABILITY_ZONE: OnceLock<String> = OnceLock::new();
 
 #[derive(Clone, Debug, Ord, PartialOrd, Eq, PartialEq)]
 pub(crate) struct Peer {
@@ -32,6 +35,12 @@ pub(crate) fn local() -> &'static Peer {
     &peers()[local_index()]
 }
 
+pub(crate) fn availability_zone() -> &'static str {
+    AVAILABILITY_ZONE
+        .get()
+        .expect("availability zone is uninitialized")
+}
+
 #[derive(Debug, Clone)]
 enum Discovery {
     Dns(String),
@@ -52,10 +61,13 @@ impl Discovery {
 pub(crate) struct PeerCli {
     #[arg(long = "peers", value_parser = Discovery::value_parser)]
     discovery: Discovery,
+
+    #[arg(long, default_value = None)]
+    availability_zone: Option<String>,
 }
 
 pub(crate) fn init(cli: PeerCli, local_addr: SocketAddr) {
-    let mut peers: Vec<_> = match cli.discovery {
+    let mut peers: Vec<_> = match &cli.discovery {
         Discovery::Dns(v) => v
             .to_socket_addrs()
             .expect("could not resolve address")
@@ -87,6 +99,16 @@ pub(crate) fn init(cli: PeerCli, local_addr: SocketAddr) {
     LOCAL_INDEX
         .set(local_index)
         .expect("local index already initialized");
+
+    let zone = match (cli.availability_zone, &cli.discovery) {
+        (Some(zone), _) => zone,
+        (None, Discovery::Dns(_)) => rand::rng().random_range(1..=3).to_string(),
+        (None, _) => Uuid::new_v4().to_string(),
+    };
+
+    AVAILABILITY_ZONE
+        .set(zone)
+        .expect("availability zone already initialized");
 }
 
 fn is_self(local_addr: SocketAddr, addr: &str) -> bool {

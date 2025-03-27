@@ -1,3 +1,4 @@
+use crate::peer::availability_zone;
 use crate::{merkle::Merkle, peer, peer::local_index, peer::Peer, store, BANDWIDTH};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -29,7 +30,7 @@ pub(crate) struct TableParams {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub(crate) struct TableData {
-    pub(crate) allocation: BTreeMap<u64, u64>,
+    pub(crate) allocation: BTreeMap<(String, u64), u64>,
     pub(crate) params: TableParams,
 }
 
@@ -40,13 +41,14 @@ impl TableData {
         let index = self
             .allocation
             .iter()
-            .scan(0, |acc, (&k, &v)| {
+            .scan(0, |acc, (k, &v)| {
                 *acc += v;
                 Some((k, *acc))
             })
             .find(|&(_, acc)| acc > ord)
             .expect("index should be less than sigma")
-            .0;
+            .0
+             .1;
 
         &peer::peers()[index as usize]
     }
@@ -94,9 +96,10 @@ impl Table {
         Ok(tables)
     }
 
-    pub(crate) fn save(&self) -> Result<()> {
+    pub(crate) fn save(&self) -> Result<Option<Table>> {
         log::debug!("{} save", self.id);
         let _guard = LOCK.lock().expect("poisoned lock");
+        let old = Table::load(self.id)?;
         let blob = postcard::to_allocvec(&self.status)?;
         store::item_set(META, self.id.as_bytes(), &blob)?;
         if !matches!(self.status, TableStatus::Prepared { .. }) {
@@ -105,7 +108,7 @@ impl Table {
                 .expect("poisoned merkle lock")
                 .insert(*self.id.as_bytes(), &blob);
         }
-        Ok(())
+        Ok(old)
     }
 
     pub(crate) fn delete_if_prepared(id: Uuid) {
@@ -132,7 +135,10 @@ pub(crate) fn init() {
                 table.save().expect("failed to prepared table");
             }
             TableStatus::Created(ref data) => {
-                if let Some(&allocated) = data.allocation.get(&(local_index() as u64)) {
+                if let Some(&allocated) = data
+                    .allocation
+                    .get(&(availability_zone().to_owned(), (local_index() as u64)))
+                {
                     BANDWIDTH.fetch_sub(allocated, Ordering::Relaxed);
                 }
 

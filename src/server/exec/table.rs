@@ -1,24 +1,21 @@
+use super::{Operations, Rpc, TableParams};
+use crate::{
+    exec::{keep_peer, table::TableError::*, Table, TableData, TableStatus},
+    peer::{self, availability_zone, local_index},
+    BANDWIDTH, PREPARE_TIME,
+};
+use anyhow::bail;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     sync::{atomic::Ordering, Mutex},
 };
-
-use anyhow::bail;
-use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::{
     task::{JoinHandle, JoinSet},
     time::sleep,
 };
 use uuid::Uuid;
-
-use crate::{
-    exec::{keep_peer, table::TableError::*, Table, TableData, TableStatus},
-    peer::{self, local_index},
-    BANDWIDTH, PREPARE_TIME,
-};
-
-use super::{Operations, Rpc, TableParams};
 
 static PENDING: Mutex<BTreeMap<Uuid, JoinHandle<()>>> = Mutex::new(BTreeMap::new());
 
@@ -37,48 +34,69 @@ pub(crate) enum TableError {
 pub(crate) async fn table_create(
     params @ TableParams { mut b, n, r, w }: TableParams,
 ) -> anyhow::Result<Uuid> {
-    log::info!("Creating table with b={b}, n={n}, r={r}, w={w}.");
-
     let id = Uuid::now_v7();
-    let mut allocation = BTreeMap::new();
+    log::info!("{id} creating with b={b}, n={n}, r={r}, w={w}");
+
+    let mut allocation_zone = BTreeMap::new();
+    let mut allocation_peer = BTreeMap::new();
     let mut allocated = 0;
     b *= n;
     for (index, peer) in peer::peers().iter().enumerate() {
-        let rpc = TablePrepare { id, request: b };
-        let available = rpc.exec(peer).await??;
+        let rpc = TablePrepare { id, request: b / n };
+        let (zone, available) = rpc.exec(peer).await??;
+        log::debug!("{id} {zone} @ {} proposed {available}", peer.addr);
+
+        let zone_remaining = (b / n).saturating_sub(*allocation_zone.get(&zone).unwrap_or(&0));
+        let available = available.min(zone_remaining);
+        log::debug!(
+            "{id} {zone} @ {} will take {available}/{zone_remaining}",
+            peer.addr
+        );
         if available == 0 {
             continue;
         }
 
-        let available = available.min(b / n);
-        allocation.insert(index as u64, available);
+        allocation_zone
+            .entry(zone.clone())
+            .and_modify(|v| *v += available)
+            .or_insert(available);
+        allocation_peer.insert((zone, index as u64), available);
         allocated += available;
+        log::debug!("{id} allocated {allocated}/{b}");
+
         if allocated >= b {
             break;
         }
     }
 
     log::info!(
-        "Found {} peers with a total of {} bandwidth.",
-        allocation.len(),
-        allocated
+        "{id}: found {} peers with a total of {allocated} bandwidth",
+        allocation_peer.len()
     );
 
     if allocated < b {
+        for (_, index) in allocation_peer.keys() {
+            let rpc = TableDelete { id };
+            let peer = &peer::peers()[*index as usize];
+            tokio::spawn(rpc.exec(peer));
+        }
         bail!("Could not allocate enough bandwidth.");
     }
 
-    for x in allocation.values_mut() {
+    for x in allocation_peer.values_mut() {
         let y = *x * b / allocated;
         b -= y;
         allocated -= *x;
         *x = y;
     }
 
-    let data = TableData { allocation, params };
+    let data = TableData {
+        allocation: allocation_peer,
+        params,
+    };
 
     let mut set = JoinSet::new();
-    for index in data.allocation.keys() {
+    for (_, index) in data.allocation.keys() {
         let rpc = TableCommit {
             id,
             table: data.clone(),
@@ -88,7 +106,10 @@ pub(crate) async fn table_create(
     }
     set.join_all().await;
 
-    if !data.allocation.contains_key(&(local_index() as u64)) {
+    if !data
+        .allocation
+        .contains_key(&(availability_zone().to_owned(), local_index() as u64))
+    {
         Table {
             id,
             status: TableStatus::Created(data),
@@ -107,14 +128,14 @@ pub(crate) struct TablePrepare {
 
 impl Rpc for TablePrepare {
     type Request = Operations;
-    type Response = Result<u64, TableError>;
+    type Response = Result<(String, u64), TableError>;
 
     fn into_variant(self) -> Self::Request {
         Operations::TablePrepare(self)
     }
 
     async fn handle(self) -> anyhow::Result<Self::Response> {
-        async fn inner(rpc: TablePrepare) -> Result<u64, TableError> {
+        async fn inner(rpc: TablePrepare) -> Result<(String, u64), TableError> {
             log::info!("{} prepare", rpc.id);
             let mut available = BANDWIDTH.load(Ordering::Relaxed);
             let proposed = loop {
@@ -150,7 +171,7 @@ impl Rpc for TablePrepare {
                 }),
             );
 
-            Ok(proposed)
+            Ok((availability_zone().to_owned(), proposed))
         }
 
         Ok(inner(self).await)
@@ -184,7 +205,7 @@ impl Rpc for TableCommit {
             let post_bandwidth = rpc
                 .table
                 .allocation
-                .get(&(local_index() as u64))
+                .get(&(availability_zone().to_owned(), local_index() as u64))
                 .copied()
                 .unwrap_or(0);
 
@@ -204,6 +225,53 @@ impl Rpc for TableCommit {
             if let Some(task) = PENDING.lock().expect("poisoned lock").remove(&rpc.id) {
                 task.abort();
             }
+            Ok(())
+        }
+
+        Ok(inner(self).await)
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct TableDelete {
+    id: Uuid,
+}
+
+impl Rpc for TableDelete {
+    type Request = Operations;
+    type Response = Result<(), TableError>;
+
+    fn into_variant(self) -> Self::Request {
+        Operations::TableDelete(self)
+    }
+
+    async fn handle(self) -> anyhow::Result<Self::Response> {
+        async fn inner(rpc: TableDelete) -> Result<(), TableError> {
+            let Some(old) = Table {
+                id: rpc.id,
+                status: TableStatus::Deleted,
+            }
+            .save()
+            .map_err(|_| Store)?
+            else {
+                return Ok(());
+            };
+
+            match old.status {
+                TableStatus::Prepared { allocated } => {
+                    BANDWIDTH.fetch_add(allocated, Ordering::Relaxed);
+                }
+                TableStatus::Created(data) => {
+                    if let Some(&allocated) = data
+                        .allocation
+                        .get(&(availability_zone().to_owned(), local_index() as u64))
+                    {
+                        BANDWIDTH.fetch_add(allocated, Ordering::Relaxed);
+                    }
+                }
+                TableStatus::Deleted => {}
+            }
+
             Ok(())
         }
 
