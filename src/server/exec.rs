@@ -1,22 +1,20 @@
-use crate::exec::TableError::{Bandwidth, Expired, Store, Unexisting, WrongStatus};
-use crate::meta::{Table, TableStatus};
-use crate::peer::SELF_INDEX;
 use crate::{
-    meta,
-    peer::{Peer, PEERS},
-    rpc::{Rpc, RpcRequest},
-    store, BANDWIDTH, TIMEOUT,
+    exec::TableError::{Expired, NotPrepared, Store, TooMuchBandwidth},
+    meta::{Table, TableData, TableParams, TableStatus},
+    peer::{self, local_index, Peer},
+    rpc::Rpc,
+    store, BANDWIDTH, PREPARE_TIME, TIMEOUT,
 };
 use anyhow::{bail, Context};
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::Ordering;
-use std::{future::Future, net::SocketAddr};
+use std::{collections::BTreeMap, future::Future, sync::atomic::Ordering};
 use thiserror::Error;
 use tokio::{
-    net::{TcpStream, ToSocketAddrs},
+    io::AsyncReadExt,
+    net::{TcpListener, TcpStream},
     task::JoinSet,
-    time::timeout,
+    time::{sleep, timeout},
 };
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -25,17 +23,20 @@ async fn keep_peer<O>(peer: &Peer, task: impl Future<Output = O>) -> (&Peer, O) 
     (peer, task.await)
 }
 
-pub async fn item_get(table: Uuid, key: Bytes) -> anyhow::Result<Vec<Option<Bytes>>> {
-    if table.get_version().context("invalid table id")? != uuid::Version::SortRand {
+pub async fn item_get(id: Uuid, key: Bytes) -> anyhow::Result<Vec<Option<Bytes>>> {
+    if id.get_version().context("invalid table id")? != uuid::Version::SortRand {
         bail!("table id has invalid version")
     }
 
-    let table = meta::get_table(table)?.context("table not found")?;
+    let table = Table::load(id)?.context("table not found")?;
+    let TableStatus::Created(table) = table.status else {
+        bail!("table is not created")
+    };
 
     let mut set = Box::new(JoinSet::new());
     for peer in table.peers_for_key(&key) {
         let rpc = ItemGet {
-            table: table.id,
+            table: id,
             key: key.clone(),
         };
         set.spawn(keep_peer(peer, timeout(TIMEOUT, rpc.exec(peer))));
@@ -49,18 +50,18 @@ pub async fn item_get(table: Uuid, key: Bytes) -> anyhow::Result<Vec<Option<Byte
                 successes += 1;
                 results.push(res);
             }
-            (Peer { addr, is_self }, Ok(Ok(Err(store_error)))) => {
-                eprintln!("GET: store error on {addr} ({is_self}), {store_error}")
+            (Peer { addr, .. }, Ok(Ok(Err(store_error)))) => {
+                eprintln!("GET: store error on {addr}, {store_error}")
             }
-            (Peer { addr, is_self }, Ok(Err(rpc_error))) => {
-                eprintln!("GET: rpc error on {addr} ({is_self}), {rpc_error}")
+            (Peer { addr, .. }, Ok(Err(rpc_error))) => {
+                eprintln!("GET: rpc error on {addr}, {rpc_error}")
             }
-            (Peer { addr, is_self }, Err(timeout_error)) => {
-                eprintln!("GET: timeout error on {addr} ({is_self}), {timeout_error}")
+            (Peer { addr, .. }, Err(timeout_error)) => {
+                eprintln!("GET: timeout error on {addr}, {timeout_error}")
             }
         }
 
-        if successes >= table.r {
+        if successes >= table.params.r {
             set.abort_all();
             break;
         }
@@ -69,14 +70,20 @@ pub async fn item_get(table: Uuid, key: Bytes) -> anyhow::Result<Vec<Option<Byte
     Ok(results)
 }
 
-pub async fn item_set(table: Uuid, key: Bytes, value: Bytes) -> anyhow::Result<()> {
-    assert_eq!(table.get_version().unwrap(), uuid::Version::SortRand);
-    let table = meta::get_table(table)?.context("table not found")?;
+pub async fn item_set(id: Uuid, key: Bytes, value: Bytes) -> anyhow::Result<()> {
+    if id.get_version().context("invalid table id")? != uuid::Version::SortRand {
+        bail!("table id has invalid version")
+    }
+
+    let table = Table::load(id)?.context("table not found")?;
+    let TableStatus::Created(table) = table.status else {
+        bail!("table is not created")
+    };
 
     let mut set = JoinSet::new();
     for peer in table.peers_for_key(&key) {
         let rpc = ItemSet {
-            table: table.id,
+            table: id,
             key: key.clone(),
             value: value.clone(),
         };
@@ -87,18 +94,18 @@ pub async fn item_set(table: Uuid, key: Bytes, value: Bytes) -> anyhow::Result<(
     while let Some(res) = set.join_next().await {
         match res.expect("Join error") {
             (_, Ok(Ok(Ok(())))) => successes += 1,
-            (Peer { addr, is_self }, Ok(Ok(Err(store_error)))) => {
-                eprintln!("GET: store error on {addr} ({is_self}), {store_error}")
+            (Peer { addr, .. }, Ok(Ok(Err(store_error)))) => {
+                eprintln!("GET: store error on {addr}, {store_error}")
             }
-            (Peer { addr, is_self }, Ok(Err(rpc_error))) => {
-                eprintln!("GET: rpc error on {addr} ({is_self}), {rpc_error}")
+            (Peer { addr, .. }, Ok(Err(rpc_error))) => {
+                eprintln!("GET: rpc error on {addr}, {rpc_error}")
             }
-            (Peer { addr, is_self }, Err(timeout_error)) => {
-                eprintln!("GET: timeout error on {addr} ({is_self}), {timeout_error}")
+            (Peer { addr, .. }, Err(timeout_error)) => {
+                eprintln!("GET: timeout error on {addr}, {timeout_error}")
             }
         }
 
-        if successes >= table.w {
+        if successes >= table.params.w {
             set.detach_all();
             return Ok(());
         }
@@ -106,32 +113,34 @@ pub async fn item_set(table: Uuid, key: Bytes, value: Bytes) -> anyhow::Result<(
 
     bail!(
         "Failed to write to {} nodes, only {successes} succeeded.",
-        table.w
+        table.params.w
     )
 }
 
-pub async fn item_list(table: Uuid) -> anyhow::Result<Vec<(SocketAddr, Vec<(Vec<u8>, Vec<u8>)>)>> {
-    let mut data = Vec::new();
+pub async fn item_list(table: Uuid) -> anyhow::Result<Vec<(String, Vec<(Vec<u8>, Vec<u8>)>)>> {
     let mut set = JoinSet::new();
-    for peer in PEERS.get().expect("Peers uninitialized") {
+    for peer in peer::peers() {
         set.spawn(keep_peer(
             peer,
             timeout(TIMEOUT, ItemList { table }.exec(peer)),
         ));
     }
+
+    let mut data = Vec::new();
     while let Some(res) = set.join_next().await {
         let (peer, res) = res.expect("Join error");
         let res = match res {
             Ok(Ok(Ok(res))) => res,
             _ => Vec::new(),
         };
-        data.push((peer.addr, res));
+        data.push((peer.addr.clone(), res));
     }
+
     Ok(data)
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-enum Operations {
+pub(crate) enum Operations {
     ItemGet(ItemGet),
     ItemSet(ItemSet),
     ItemList(ItemList),
@@ -149,26 +158,47 @@ impl Operations {
             Operations::TableCommit(_) => "table-commit",
         }
     }
-}
 
-impl RpcRequest for Operations {
-    async fn remote(self, stream: TcpStream) -> anyhow::Result<()> {
-        let name = self.name();
-        let peer = stream.peer_addr()?.ip();
-        eprintln!("RPC: handling {name} for {peer}");
+    pub(crate) async fn listener(
+        listener: TcpListener,
+        token: CancellationToken,
+    ) -> anyhow::Result<()> {
+        async fn recv(mut stream: TcpStream) -> anyhow::Result<()> {
+            let mut buffer = Vec::new();
+            stream.read_to_end(&mut buffer).await?;
+            let variant: Operations = postcard::from_bytes(&buffer)?;
+            log::info!("Request: {}", variant.name());
 
-        match self {
-            Self::ItemGet(get) => get.remote(stream).await,
-            Self::ItemSet(set) => set.remote(stream).await,
-            Self::ItemList(list) => list.remote(stream).await,
-            Self::TablePrepare(prepare) => prepare.remote(stream).await,
-            Self::TableCommit(commit) => commit.remote(stream).await,
+            match variant {
+                Operations::ItemGet(get) => get.remote(stream).await,
+                Operations::ItemSet(set) => set.remote(stream).await,
+                Operations::ItemList(list) => list.remote(stream).await,
+                Operations::TablePrepare(prepare) => prepare.remote(stream).await,
+                Operations::TableCommit(commit) => commit.remote(stream).await,
+            }
         }
+
+        loop {
+            let result = tokio::select! {
+                _ = token.cancelled() => break,
+                result = listener.accept() => result,
+            };
+
+            let (socket, peer) = result?;
+            tokio::spawn(async move {
+                match recv(socket).await {
+                    Ok(_) => eprintln!("RPC: successfully handled for {}", peer.ip()),
+                    Err(error) => eprintln!("RPC: error while handling {peer}, {error}"),
+                };
+            });
+        }
+
+        Ok(())
     }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct ItemGet {
+pub(crate) struct ItemGet {
     table: Uuid,
     key: Bytes,
 }
@@ -187,7 +217,7 @@ impl Rpc for ItemGet {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct ItemSet {
+pub(crate) struct ItemSet {
     table: Uuid,
     key: Bytes,
     value: Bytes,
@@ -207,7 +237,7 @@ impl Rpc for ItemSet {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct ItemList {
+pub(crate) struct ItemList {
     table: Uuid,
 }
 
@@ -224,51 +254,36 @@ impl Rpc for ItemList {
     }
 }
 
-pub async fn listener<A: ToSocketAddrs>(addr: A, token: CancellationToken) -> anyhow::Result<()> {
-    Operations::listener(addr, token).await
-}
-
 #[derive(Error, Debug, Serialize, Deserialize)]
-enum TableError {
-    #[error("table does not have expected status {0:?}")]
-    WrongStatus(TableStatus),
+pub(crate) enum TableError {
     #[error("could not store table")]
     Store,
     #[error("could not store table")]
-    Unexisting,
+    NotPrepared,
     #[error("expired table")]
     Expired,
     #[error("bandwidth error")]
-    Bandwidth,
+    TooMuchBandwidth,
 }
 
-pub async fn table_create(mut b: u64, n: u64, r: u64, w: u64) -> anyhow::Result<Uuid> {
+pub(crate) async fn table_create(
+    params @ TableParams { mut b, n, r, w }: TableParams,
+) -> anyhow::Result<Uuid> {
     log::info!("Creating table with b={b}, n={n}, r={r}, w={w}.");
 
-    let peers = PEERS.get().expect("Peers uninitialized");
-
-    let mut table = Table {
-        id: Uuid::now_v7(),
-        status: TableStatus::Prepared,
-        peers: vec![],
-        n,
-        r,
-        w,
-    };
-
+    let id = Uuid::now_v7();
+    let mut allocation = BTreeMap::new();
     let mut allocated = 0;
     b *= n;
-    for (index, peer) in peers.iter().enumerate() {
-        let rpc = TablePrepare {
-            table: table.clone(),
-            request: b,
-        };
+    for (index, peer) in peer::peers().iter().enumerate() {
+        let rpc = TablePrepare { id, request: b };
         let available = rpc.exec(peer).await??;
         if available == 0 {
             continue;
         }
+
         let available = available.min(b / n);
-        table.peers.push((index as u64, available));
+        allocation.insert(index as u64, available);
         allocated += available;
         if allocated >= b {
             break;
@@ -277,7 +292,7 @@ pub async fn table_create(mut b: u64, n: u64, r: u64, w: u64) -> anyhow::Result<
 
     log::info!(
         "Found {} peers with a total of {} bandwidth.",
-        table.peers.len(),
+        allocation.len(),
         allocated
     );
 
@@ -285,36 +300,40 @@ pub async fn table_create(mut b: u64, n: u64, r: u64, w: u64) -> anyhow::Result<
         bail!("Could not allocate enough bandwidth.");
     }
 
-    for (_, x) in &mut table.peers {
+    for x in allocation.values_mut() {
         let y = *x * b / allocated;
         b -= y;
         allocated -= *x;
         *x = y;
     }
 
-    table.status = TableStatus::Created;
+    let data = TableData { allocation, params };
 
     let mut set = JoinSet::new();
-    let mut own_table = false;
-    for (index, _) in &table.peers {
+    for index in data.allocation.keys() {
         let rpc = TableCommit {
-            table: table.clone(),
+            id,
+            table: data.clone(),
         };
-        let peer = &peers[*index as usize];
-        own_table |= peer.is_self;
+        let peer = &peer::peers()[*index as usize];
         set.spawn(keep_peer(peer, rpc.exec(peer)));
     }
     set.join_all().await;
 
-    if !own_table {
-        meta::set_table(&table)?;
+    if !data.allocation.contains_key(&(local_index() as u64)) {
+        Table {
+            id,
+            status: TableStatus::Created(data),
+        }
+        .save()?;
     }
-    Ok(table.id)
+
+    Ok(id)
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct TablePrepare {
-    table: Table,
+pub(crate) struct TablePrepare {
+    id: Uuid,
     request: u64,
 }
 
@@ -327,11 +346,7 @@ impl Rpc for TablePrepare {
     }
 
     async fn handle(self) -> anyhow::Result<Self::Response> {
-        async fn inner(mut rpc: TablePrepare) -> Result<u64, TableError> {
-            if rpc.table.status != TableStatus::Prepared {
-                return Err(WrongStatus(TableStatus::Prepared));
-            }
-
+        async fn inner(rpc: TablePrepare) -> Result<u64, TableError> {
             let mut available = BANDWIDTH.load(Ordering::Relaxed);
             let proposed = loop {
                 let proposed = rpc.request.min(available);
@@ -346,9 +361,19 @@ impl Rpc for TablePrepare {
                 }
             };
 
-            let self_index = *SELF_INDEX.get().expect("self_index uninitialized") as u64;
-            rpc.table.peers.push((self_index, proposed));
-            meta::set_table(&rpc.table).map_err(|_| Store)?;
+            Table {
+                id: rpc.id,
+                status: TableStatus::Prepared {
+                    allocated: proposed,
+                },
+            }
+            .save()
+            .map_err(|_| Store)?;
+
+            tokio::spawn(async move {
+                sleep(PREPARE_TIME).await;
+                Table::delete_if_prepared(rpc.id);
+            });
 
             Ok(proposed)
         }
@@ -358,8 +383,9 @@ impl Rpc for TablePrepare {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct TableCommit {
-    table: Table,
+pub(crate) struct TableCommit {
+    id: Uuid,
+    table: TableData,
 }
 
 impl Rpc for TableCommit {
@@ -372,40 +398,32 @@ impl Rpc for TableCommit {
 
     async fn handle(self) -> anyhow::Result<Self::Response> {
         async fn inner(rpc: TableCommit) -> Result<(), TableError> {
-            if rpc.table.status != TableStatus::Created {
-                return Err(WrongStatus(TableStatus::Created));
-            }
+            let table = Table::load(rpc.id).map_err(|_| Store)?.ok_or(NotPrepared)?;
 
-            let table = meta::get_table(rpc.table.id)
-                .map_err(|_| Store)?
-                .ok_or(Unexisting)?;
-
-            if table.status != TableStatus::Prepared {
+            let TableStatus::Prepared { allocated } = table.status else {
                 return Err(Expired);
-            }
+            };
 
-            let self_index = *SELF_INDEX.get().expect("self uninitialized") as u64;
-            let pre_bandwidth = table
-                .peers
-                .iter()
-                .filter_map(|(i, b)| if *i == self_index { Some(*b) } else { None })
-                .next()
-                .unwrap_or(0);
+            let pre_bandwidth = allocated;
             let post_bandwidth = rpc
                 .table
-                .peers
-                .iter()
-                .filter_map(|(i, b)| if *i == self_index { Some(*b) } else { None })
-                .next()
+                .allocation
+                .get(&(local_index() as u64))
+                .copied()
                 .unwrap_or(0);
 
             if post_bandwidth > pre_bandwidth {
-                return Err(Bandwidth);
+                return Err(TooMuchBandwidth);
             }
 
             BANDWIDTH.fetch_add(pre_bandwidth - post_bandwidth, Ordering::Relaxed);
 
-            meta::set_table(&rpc.table).map_err(|_| Store)?;
+            Table {
+                id: rpc.id,
+                status: TableStatus::Created(rpc.table),
+            }
+            .save()
+            .map_err(|_| Store)?;
 
             Ok(())
         }

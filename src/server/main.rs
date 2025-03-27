@@ -6,10 +6,12 @@ mod peer;
 mod rpc;
 mod store;
 
+use crate::exec::Operations;
 use anyhow::Result;
 use clap::{arg, Parser};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
+use tokio::net::TcpListener;
 use tokio::{signal::unix::SignalKind, try_join};
 use tokio_util::sync::CancellationToken;
 
@@ -62,14 +64,15 @@ async fn main() -> Result<()> {
         bandwidth,
     } = Cli::parse();
 
-    peer::init(peer_cli, &rpc_addr)?;
+    let listener = TcpListener::bind(rpc_addr).await?;
+    peer::init(peer_cli, listener.local_addr()?);
     store::init(store_cli)?;
     BANDWIDTH.store(bandwidth, Ordering::Relaxed);
-    meta::cleanup_tables()?;
+    meta::init();
 
     let token = CancellationToken::new();
     let http = http::main(&http_addr, token.clone());
-    let rpc = exec::listener(rpc_addr, token.clone());
+    let rpc = Operations::listener(listener, token.clone());
     let killer = killer(token);
     try_join!(http, rpc, killer)?;
     Ok(())

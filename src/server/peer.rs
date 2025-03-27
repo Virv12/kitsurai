@@ -5,79 +5,115 @@ use std::{
     sync::OnceLock,
 };
 
-#[derive(Clone, Debug)]
-pub struct Peer {
-    pub addr: SocketAddr,
-    pub is_self: bool,
+static PEERS: OnceLock<Vec<Peer>> = OnceLock::new();
+static LOCAL_INDEX: OnceLock<usize> = OnceLock::new();
+
+#[derive(Clone, Debug, Ord, PartialOrd, Eq, PartialEq)]
+pub(crate) struct Peer {
+    pub addr: String,
+    _marker: (),
 }
 
-pub static PEERS: OnceLock<Vec<Peer>> = OnceLock::new();
-pub static SELF_INDEX: OnceLock<usize> = OnceLock::new();
+impl Peer {
+    pub(crate) fn is_local(&self) -> bool {
+        std::ptr::eq(self, local())
+    }
+}
+
+pub(crate) fn peers() -> &'static [Peer] {
+    PEERS.get().expect("peers list is uninitialized")
+}
+
+pub(crate) fn local_index() -> usize {
+    *LOCAL_INDEX.get().expect("local index is uninitialized")
+}
+
+pub(crate) fn local() -> &'static Peer {
+    &peers()[local_index()]
+}
 
 #[derive(Debug, Clone)]
-pub(crate) enum Peers {
+enum Discovery {
     Dns(String),
     List(String),
 }
 
-#[derive(Debug, Parser)]
-pub(crate) struct PeerCli {
-    #[arg(long, value_parser = parse_peers)]
-    pub(crate) peers: Peers,
-}
-
-fn parse_peers(value: &str) -> Result<Peers, Infallible> {
-    if let Some(stripped) = value.strip_prefix("dns:") {
-        Ok(Peers::Dns(stripped.to_string()))
-    } else {
-        Ok(Peers::List(value.to_string()))
+impl Discovery {
+    fn value_parser(value: &str) -> Result<Discovery, Infallible> {
+        if let Some(stripped) = value.strip_prefix("dns:") {
+            Ok(Discovery::Dns(stripped.to_string()))
+        } else {
+            Ok(Discovery::List(value.to_string()))
+        }
     }
 }
 
-pub(crate) fn init(cli: PeerCli, self_addr: &str) -> anyhow::Result<()> {
-    let self_addr = self_addr.to_socket_addrs()?.next().unwrap();
-    let mut peers: Vec<SocketAddr> = match cli.peers {
-        Peers::Dns(v) => v.to_socket_addrs()?.collect(),
-        Peers::List(l) => l
+#[derive(Debug, Parser)]
+pub(crate) struct PeerCli {
+    #[arg(long = "peers", value_parser = Discovery::value_parser)]
+    discovery: Discovery,
+}
+
+pub(crate) fn init(cli: PeerCli, local_addr: SocketAddr) {
+    let mut peers: Vec<_> = match cli.discovery {
+        Discovery::Dns(v) => v
+            .to_socket_addrs()
+            .expect("could not resolve address")
+            .map(|a| Peer {
+                addr: a.to_string(),
+                _marker: (),
+            })
+            .collect(),
+        Discovery::List(l) => l
             .split(',')
-            .map(|s| s.to_socket_addrs().unwrap().next().unwrap())
+            .map(|a| Peer {
+                addr: a.to_owned(),
+                _marker: (),
+            })
             .collect(),
     };
 
     peers.sort();
 
-    let peers: Vec<_> = peers
-        .into_iter()
-        .map(|addr| Peer {
-            addr,
-            is_self: is_self(self_addr, addr),
-        })
-        .collect();
-
-    let self_index = peers
+    let local_index = peers
         .iter()
-        .position(|p| p.is_self)
-        .expect("self not in peers");
+        .position(|p| is_self(local_addr, &p.addr))
+        .expect("self is not in peers");
 
-    PEERS.set(peers).expect("Peers already initialized");
-    SELF_INDEX
-        .set(self_index)
-        .expect("self already initialized");
-    Ok(())
+    PEERS
+        .set(peers)
+        .expect("peers should not be initialized!!!");
+
+    LOCAL_INDEX
+        .set(local_index)
+        .expect("local index already initialized");
 }
 
-// TODO: this could break if there are two peers with addresses 127.0.0.1:3000 and 127.0.0.2:3000
-fn is_local_ip(ip: IpAddr) -> bool {
-    let interfaces = local_ip_address::list_afinet_netifas().unwrap();
-    for (_, iface_ip) in interfaces {
-        if iface_ip == ip {
+fn is_self(local_addr: SocketAddr, addr: &str) -> bool {
+    fn is_local_ip(ip: IpAddr) -> bool {
+        let interfaces = local_ip_address::list_afinet_netifas().unwrap();
+        for (_, iface_ip) in interfaces {
+            if iface_ip == ip {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    for addr in addr.to_socket_addrs().expect("could not resolve address") {
+        let ip_ok = if local_addr.ip().is_unspecified() {
+            is_local_ip(addr.ip())
+        } else {
+            local_addr.ip() == addr.ip()
+        };
+
+        let port_ok = local_addr.port() == addr.port();
+
+        if ip_ok && port_ok {
             return true;
         }
     }
 
     false
-}
-
-fn is_self(self_addr: SocketAddr, addr: SocketAddr) -> bool {
-    addr.port() == self_addr.port() && is_local_ip(addr.ip())
 }

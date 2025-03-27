@@ -1,5 +1,8 @@
-use crate::peer::PEERS;
-use crate::{exec, meta};
+use crate::{
+    exec,
+    meta::{Table, TableParams, TableStatus},
+    peer,
+};
 use anyhow::Result;
 use axum::{
     body::Bytes,
@@ -9,7 +12,6 @@ use axum::{
     Form, Router,
 };
 use kitsurai::codec::Header;
-use serde::Deserialize;
 use std::{collections::BTreeMap, io::Write};
 use tokio::net::{TcpListener, ToSocketAddrs};
 use tokio_util::sync::CancellationToken;
@@ -35,26 +37,29 @@ pub async fn main<A: ToSocketAddrs>(addr: A, token: CancellationToken) -> Result
 }
 
 async fn table_list() -> (StatusCode, String) {
-    let peers = PEERS.get().expect("peers not initialized");
-
-    match meta::list_tables() {
+    match Table::list() {
         Ok(tables) => (
             StatusCode::OK,
             tables
                 .into_iter()
-                .map(|t| {
-                    format!(
+                .filter_map(|t| {
+                    let id = t.id;
+                    let TableStatus::Created(t) = t.status else {
+                        return None;
+                    };
+
+                    Some(format!(
                         "{} ({}, {}, {}) -> {}",
-                        t.id,
-                        t.n,
-                        t.r,
-                        t.w,
-                        t.peers
+                        id,
+                        t.params.n,
+                        t.params.r,
+                        t.params.w,
+                        t.allocation
                             .into_iter()
-                            .map(|(i, b)| format!("{b}@{}", peers[i as usize].addr))
+                            .map(|(i, b)| format!("{b}@{}", peer::peers()[i as usize].addr))
                             .collect::<Vec<String>>()
                             .join(", ")
-                    )
+                    ))
                 })
                 .collect::<Vec<String>>()
                 .join("\n")
@@ -64,18 +69,8 @@ async fn table_list() -> (StatusCode, String) {
     }
 }
 
-#[derive(Deserialize)]
-struct TableParameter {
-    b: u64,
-    n: u64,
-    r: u64,
-    w: u64,
-}
-
-async fn table_create(
-    Form(TableParameter { b, n, r, w }): Form<TableParameter>,
-) -> (StatusCode, String) {
-    match exec::table_create(b, n, r, w).await {
+async fn table_create(Form(params): Form<TableParams>) -> (StatusCode, String) {
+    match exec::table_create(params).await {
         Ok(uuid) => (StatusCode::OK, uuid.to_string() + "\n"),
         Err(err) => (StatusCode::BAD_REQUEST, err.to_string() + "\n"),
     }
@@ -120,7 +115,7 @@ async fn item_set(Path((table, key)): Path<(Uuid, Bytes)>, body: Bytes) -> (Stat
 async fn item_list(Path(table): Path<Uuid>) -> (StatusCode, Vec<u8>) {
     async fn inner(table: Uuid) -> Result<Vec<u8>> {
         let mut data = exec::item_list(table).await?;
-        data.sort_by_key(|(peer, _)| *peer);
+        data.sort_by_key(|(peer, _)| peer.clone());
 
         let mut keys = data
             .iter()
@@ -138,8 +133,8 @@ async fn item_list(Path(table): Path<Uuid>) -> (StatusCode, Vec<u8>) {
             .collect();
 
         let mut out = Vec::new();
-        for &(peer, _) in &data {
-            write!(out, "${}", peer.ip())?;
+        for (peer, _) in &data {
+            write!(out, "${}", peer)?;
         }
         writeln!(out)?;
 
