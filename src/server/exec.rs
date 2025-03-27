@@ -269,6 +269,13 @@ pub(crate) enum TableError {
 pub(crate) async fn table_create(
     params @ TableParams { mut b, n, r, w }: TableParams,
 ) -> anyhow::Result<Uuid> {
+    if r <= n {
+        bail!("R is greater then N");
+    }
+    if w <= n {
+        bail!("W is greater then N");
+    }
+
     log::info!("Creating table with b={b}, n={n}, r={r}, w={w}.");
 
     let id = Uuid::now_v7();
