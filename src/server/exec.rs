@@ -5,7 +5,7 @@ use crate::{
     meta,
     peer::{Peer, PEERS},
     rpc::{Rpc, RpcRequest},
-    store, BANDWIDTH, NECESSARY_READ, NECESSARY_WRITE, TIMEOUT,
+    store, BANDWIDTH, TIMEOUT,
 };
 use anyhow::{bail, Context};
 use bytes::Bytes;
@@ -60,7 +60,7 @@ pub async fn item_get(table: Uuid, key: Bytes) -> anyhow::Result<Vec<Option<Byte
             }
         }
 
-        if successes >= NECESSARY_READ {
+        if successes >= table.r {
             set.abort_all();
             break;
         }
@@ -98,13 +98,16 @@ pub async fn item_set(table: Uuid, key: Bytes, value: Bytes) -> anyhow::Result<(
             }
         }
 
-        if successes >= NECESSARY_WRITE {
+        if successes >= table.w {
             set.detach_all();
             return Ok(());
         }
     }
 
-    bail!("Failed to write to {NECESSARY_WRITE} nodes, only {successes} succeeded.")
+    bail!(
+        "Failed to write to {} nodes, only {successes} succeeded.",
+        table.w
+    )
 }
 
 pub async fn item_list(table: Uuid) -> anyhow::Result<Vec<(SocketAddr, Vec<(Vec<u8>, Vec<u8>)>)>> {

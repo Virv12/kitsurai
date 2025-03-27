@@ -1,7 +1,7 @@
 use crate::{
     merkle::Merkle,
     peer::{Peer, PEERS, SELF_INDEX},
-    store, BANDWIDTH, PREPARE_TIME, REPLICATION,
+    store, BANDWIDTH, PREPARE_TIME,
 };
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -40,7 +40,7 @@ impl Table {
             .iter()
             .cycle()
             .skip(idx)
-            .take(REPLICATION)
+            .take(self.n as usize)
             .map(|(i, _)| &peers[*i as usize])
     }
 }
