@@ -8,8 +8,10 @@ use crate::{
 use anyhow::{bail, Context};
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
+use std::sync::Mutex;
 use std::{collections::BTreeMap, future::Future, sync::atomic::Ordering};
 use thiserror::Error;
+use tokio::task::JoinHandle;
 use tokio::{
     io::AsyncReadExt,
     net::{TcpListener, TcpStream},
@@ -338,6 +340,8 @@ pub(crate) async fn table_create(
     Ok(id)
 }
 
+static PENDING: Mutex<BTreeMap<Uuid, JoinHandle<()>>> = Mutex::new(BTreeMap::new());
+
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct TablePrepare {
     id: Uuid,
@@ -377,10 +381,14 @@ impl Rpc for TablePrepare {
             .save()
             .map_err(|_| Store)?;
 
-            tokio::spawn(async move {
-                sleep(PREPARE_TIME).await;
-                Table::delete_if_prepared(rpc.id);
-            });
+            PENDING.lock().expect("poisoned lock").insert(
+                rpc.id,
+                tokio::spawn(async move {
+                    sleep(PREPARE_TIME).await;
+                    Table::delete_if_prepared(rpc.id);
+                    PENDING.lock().expect("poisoned lock").remove(&rpc.id);
+                }),
+            );
 
             Ok(proposed)
         }
@@ -432,6 +440,7 @@ impl Rpc for TableCommit {
             .save()
             .map_err(|_| Store)?;
 
+            PENDING.lock().expect("poisoned lock").remove(&rpc.id);
             Ok(())
         }
 
