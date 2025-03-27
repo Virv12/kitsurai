@@ -70,14 +70,14 @@ async fn table_list() -> (StatusCode, String) {
 }
 
 async fn table_create(Form(params): Form<TableParams>) -> (StatusCode, String) {
-    match exec::table_create(params).await {
+    match exec::table::table_create(params).await {
         Ok(uuid) => (StatusCode::OK, uuid.to_string() + "\n"),
         Err(err) => (StatusCode::BAD_REQUEST, err.to_string() + "\n"),
     }
 }
 
 async fn item_get(Path((table, key)): Path<(Uuid, Bytes)>) -> (StatusCode, Vec<u8>) {
-    match exec::item_get(table, key).await {
+    match exec::item::item_get(table, key).await {
         Ok(values) => {
             let lengths: Vec<Option<u64>> = values
                 .iter()
@@ -106,7 +106,7 @@ async fn item_get(Path((table, key)): Path<(Uuid, Bytes)>) -> (StatusCode, Vec<u
 }
 
 async fn item_set(Path((table, key)): Path<(Uuid, Bytes)>, body: Bytes) -> (StatusCode, String) {
-    match exec::item_set(table, key, body).await {
+    match exec::item::item_set(table, key, body).await {
         Ok(()) => (StatusCode::CREATED, "Item set!\n".to_string()),
         Err(e) => (StatusCode::BAD_REQUEST, format!("{e}\n")),
     }
@@ -114,7 +114,7 @@ async fn item_set(Path((table, key)): Path<(Uuid, Bytes)>, body: Bytes) -> (Stat
 
 async fn item_list(Path(table): Path<Uuid>) -> (StatusCode, Vec<u8>) {
     async fn inner(table: Uuid) -> Result<Vec<u8>> {
-        let mut data = exec::item_list(table).await?;
+        let mut data = exec::item::item_list(table).await?;
         data.sort_by_key(|(peer, _)| peer.clone());
 
         let mut keys = data
