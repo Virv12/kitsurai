@@ -2,15 +2,17 @@ pub(crate) mod gossip;
 pub(crate) mod item;
 pub(crate) mod table;
 
-use crate::exec::table::{TableCommit, TableDelete, TablePrepare};
 use crate::{
-    exec::item::{ItemGet, ItemList, ItemSet},
+    exec::{
+        item::{ItemGet, ItemList, ItemSet},
+        table::{TableCommit, TableDelete, TablePrepare},
+    },
     meta::{Table, TableData, TableParams, TableStatus},
     peer::Peer,
     rpc::Rpc,
 };
 use derive_more::From;
-use gossip::{Gossip, MerkleFind};
+use gossip::{GossipFind, GossipSync};
 use serde::{Deserialize, Serialize};
 use std::future::Future;
 use tokio::{
@@ -31,8 +33,8 @@ pub(crate) enum Operations {
     TablePrepare(TablePrepare),
     TableCommit(TableCommit),
     TableDelete(TableDelete),
-    Gossip(Gossip),
-    MerkleFind(MerkleFind),
+    Gossip(GossipSync),
+    MerkleFind(GossipFind),
 }
 
 impl Operations {
@@ -57,7 +59,7 @@ impl Operations {
             let mut buffer = Vec::new();
             stream.read_to_end(&mut buffer).await?;
             let variant: Operations = postcard::from_bytes(&buffer)?;
-            log::info!("Request: {}", variant.name());
+            log::info!("Request from {}: {}", stream.peer_addr()?, variant.name());
 
             match variant {
                 Operations::ItemGet(get) => get.remote(stream).await,
@@ -81,7 +83,7 @@ impl Operations {
             tokio::spawn(async move {
                 match recv(socket).await {
                     Ok(_) => {}
-                    Err(error) => log::debug!("error while handling {peer}, {error}"),
+                    Err(error) => log::error!("failed to handle request from {peer}: {error}"),
                 };
             });
         }

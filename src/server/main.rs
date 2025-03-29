@@ -9,10 +9,12 @@ mod store;
 use crate::exec::{gossip, Operations};
 use anyhow::Result;
 use clap::{arg, Parser};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::{io::Write, time::Duration};
-use tokio::net::TcpListener;
-use tokio::{signal::unix::SignalKind, try_join};
+use std::{
+    io::Write,
+    sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
+};
+use tokio::{net::TcpListener, signal::unix::SignalKind, try_join};
 use tokio_util::sync::CancellationToken;
 
 // Compile-time configuration.
@@ -20,7 +22,7 @@ const TIMEOUT: Duration = Duration::from_secs(1);
 const PREPARE_TIME: Duration = Duration::from_secs(60);
 
 // Run-time configuration.
-pub static BANDWIDTH: AtomicU64 = AtomicU64::new(0);
+static BANDWIDTH: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Parser)]
 #[clap(author, version, about)]

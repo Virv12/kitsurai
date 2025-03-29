@@ -1,6 +1,8 @@
-use super::{Operations, Rpc, TableParams};
 use crate::{
-    exec::{keep_peer, table::TableError::*, Table, TableData, TableStatus},
+    exec::{
+        keep_peer, table::TableError::*, Operations, Rpc, Table, TableData, TableParams,
+        TableStatus,
+    },
     peer::{self, availability_zone, local_index},
     BANDWIDTH, PREPARE_TIME,
 };

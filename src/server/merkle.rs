@@ -50,7 +50,7 @@ impl Path {
 
 impl Display for Path {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let ipv6 = Ipv6Addr::from(self.id);
+        let ipv6 = Ipv6Addr::from(self.id.to_le_bytes());
         write!(f, "{}/{}", ipv6, self.prefix)
     }
 }

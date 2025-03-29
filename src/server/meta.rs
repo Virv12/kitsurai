@@ -1,5 +1,8 @@
-use crate::peer::availability_zone;
-use crate::{merkle::Merkle, peer, peer::local_index, peer::Peer, store, BANDWIDTH};
+use crate::{
+    merkle::Merkle,
+    peer::{self, availability_zone, local_index, Peer},
+    store, BANDWIDTH,
+};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::{

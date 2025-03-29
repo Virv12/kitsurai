@@ -9,37 +9,36 @@ use anyhow::Result;
 use rand::seq::IndexedRandom;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
-use tokio::time::sleep;
+use tokio::{task::JoinHandle, time::sleep};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 pub(crate) async fn gossip(token: CancellationToken) -> Result<()> {
     loop {
+        tokio::select! {
+            _ = token.cancelled() => break,
+            _ = sleep(Duration::from_secs(1)) => {}
+        };
+
         let peers = peer::peers();
         let mut rng = rand::rng();
         let peer = peers.choose(&mut rng).expect("no peers available");
         if !peer.is_local() {
-            check_sync(peer, merkle::Path::root()).await?;
+            log::info!("Gossiping with {}", peer.addr);
+            if let Err(err) = check_sync(peer, merkle::Path::root()).await {
+                log::error!("Gossiping with {} failed: {}", peer.addr, err);
+            }
         }
-
-        tokio::select! {
-            _ = token.cancelled() => break,
-            _ = sleep(Duration::from_secs(10)) => {}
-        };
     }
 
     Ok(())
 }
 
-async fn check_sync(peer: &Peer, path: merkle::Path) -> Result<()> {
+async fn check_sync(peer: &'static Peer, path: merkle::Path) -> Result<()> {
     log::debug!("Gossiping with {} at {}", peer.addr, path);
 
-    let local_node = meta::MERKLE
-        .lock()
-        .expect("poisoned merkle lock")
-        .find(path);
-
-    let remote_node = MerkleFind { path }.exec(peer).await?;
+    let local_node = GossipFind { path }.handle().await?;
+    let remote_node = GossipFind { path }.exec(peer).await?;
 
     match (local_node, remote_node) {
         (None, None) => Ok(()),
@@ -61,16 +60,22 @@ async fn check_sync(peer: &Peer, path: merkle::Path) -> Result<()> {
     }
 }
 
-async fn sync(peer: &Peer, path: merkle::Path) -> Result<()> {
+async fn sync(peer: &'static Peer, path: merkle::Path) -> Result<()> {
+    fn spawn(peer: &'static Peer, path: merkle::Path) -> JoinHandle<Result<()>> {
+        tokio::spawn(check_sync(peer, path))
+    }
+
     if let Some((left, right)) = path.children() {
-        Box::pin(check_sync(peer, left)).await?;
-        Box::pin(check_sync(peer, right)).await?;
+        let left = spawn(peer, left);
+        let right = spawn(peer, right);
+        left.await??;
+        right.await??;
     } else {
         log::debug!("Syncing {}", path);
         let id = Uuid::from_u128_le(path.id);
         let table = Table::load(id)?;
         let table = table.map(|table| table.status);
-        let res = Gossip { id, table }.exec(peer).await?;
+        let res = GossipSync { id, table }.exec(peer).await?;
         if let Some(table) = res {
             Table { id, status: table }.growing_save()?;
         }
@@ -80,12 +85,12 @@ async fn sync(peer: &Peer, path: merkle::Path) -> Result<()> {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct Gossip {
+pub(crate) struct GossipSync {
     id: Uuid,
     table: Option<TableStatus>,
 }
 
-impl Rpc for Gossip {
+impl Rpc for GossipSync {
     type Request = Operations;
     type Response = Option<TableStatus>;
 
@@ -104,11 +109,11 @@ impl Rpc for Gossip {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct MerkleFind {
+pub(crate) struct GossipFind {
     path: merkle::Path,
 }
 
-impl Rpc for MerkleFind {
+impl Rpc for GossipFind {
     type Request = Operations;
     type Response = Option<(merkle::Path, u128)>;
 
