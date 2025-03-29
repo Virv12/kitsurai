@@ -4,8 +4,11 @@ use serde::{Deserialize, Serialize};
 use std::{path::PathBuf, sync::OnceLock};
 use uuid::Uuid;
 
+/// Where the `sqlite` database should be stored.
+/// Initialized by [init].
 static STORE_PATH: OnceLock<PathBuf> = OnceLock::new();
 
+/// Storage configuration.
 #[derive(Debug, Parser)]
 pub(crate) struct StoreCli {
     #[arg(long, default_value = "store.db")]
@@ -13,12 +16,18 @@ pub(crate) struct StoreCli {
 }
 
 thread_local! {
+    /// This threads sqlite connection.
+    ///
+    /// TODO: Every thread has its own connection to allow request parallelization?
     static SQLITE: rusqlite::Connection = {
         let path = STORE_PATH.get().expect("Store path uninitialized");
         rusqlite::Connection::open(path).expect("Failed to open SQLite database")
     };
 }
 
+/// Initializes the storage global state as specified in the configuration.
+///
+/// Creates the sqlite table if it does not exist.
 pub(crate) fn init(cli: StoreCli) -> anyhow::Result<()> {
     log::info!("Initialize store at {}", cli.store_path.display());
     STORE_PATH
@@ -38,6 +47,7 @@ pub(crate) fn init(cli: StoreCli) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Errors that can be returned by this module's methods.
 #[derive(thiserror::Error, Serialize, Deserialize, Debug, Clone)]
 pub(crate) enum Error {}
 

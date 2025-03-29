@@ -2,6 +2,9 @@
 name = "kitsurai"
 version = "0.1.0"
 edition = "2021"
+authors = ["Filippo Casarin", "Jacopo Del Granchio"]
+description = "A distributed, scalable, and fault-tolerant key-value store."
+readme = "README.md"
 
 [[bin]]
 name = "ktd"
