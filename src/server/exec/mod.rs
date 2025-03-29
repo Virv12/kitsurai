@@ -1,3 +1,4 @@
+pub(crate) mod gossip;
 pub(crate) mod item;
 pub(crate) mod table;
 
@@ -8,6 +9,8 @@ use crate::{
     peer::Peer,
     rpc::Rpc,
 };
+use derive_more::From;
+use gossip::{Gossip, MerkleFind};
 use serde::{Deserialize, Serialize};
 use std::future::Future;
 use tokio::{
@@ -20,7 +23,7 @@ async fn keep_peer<O>(peer: &Peer, task: impl Future<Output = O>) -> (&Peer, O) 
     (peer, task.await)
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, From)]
 pub(crate) enum Operations {
     ItemGet(ItemGet),
     ItemSet(ItemSet),
@@ -28,6 +31,8 @@ pub(crate) enum Operations {
     TablePrepare(TablePrepare),
     TableCommit(TableCommit),
     TableDelete(TableDelete),
+    Gossip(Gossip),
+    MerkleFind(MerkleFind),
 }
 
 impl Operations {
@@ -39,6 +44,8 @@ impl Operations {
             Operations::TablePrepare(_) => "table-prepare",
             Operations::TableCommit(_) => "table-commit",
             Operations::TableDelete(_) => "table-delete",
+            Operations::Gossip(_) => "gossip",
+            Operations::MerkleFind(_) => "merkle-find",
         }
     }
 
@@ -59,6 +66,8 @@ impl Operations {
                 Operations::TablePrepare(prepare) => prepare.remote(stream).await,
                 Operations::TableCommit(commit) => commit.remote(stream).await,
                 Operations::TableDelete(delete) => delete.remote(stream).await,
+                Operations::Gossip(gossip) => gossip.remote(stream).await,
+                Operations::MerkleFind(find) => find.remote(stream).await,
             }
         }
 

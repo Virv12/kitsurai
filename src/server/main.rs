@@ -6,7 +6,7 @@ mod peer;
 mod rpc;
 mod store;
 
-use crate::exec::Operations;
+use crate::exec::{gossip, Operations};
 use anyhow::Result;
 use clap::{arg, Parser};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -77,7 +77,7 @@ async fn main() -> Result<()> {
 
             writeln!(
                 buf,
-                "{s_addr}{rpc_addr2}{s_addr:#} {s_lvl}{lvl:5}{s_lvl:#} {s_tgt}{tgt:16}{s_tgt:#} | {args}"
+                "{s_addr}{rpc_addr2}{s_addr:#} {s_lvl}{lvl:5}{s_lvl:#} {s_tgt}{tgt:17}{s_tgt:#} | {args}"
             )
         })
         .init();
@@ -91,7 +91,8 @@ async fn main() -> Result<()> {
     let token = CancellationToken::new();
     let http = http::main(&http_addr, token.clone());
     let rpc = Operations::listener(listener, token.clone());
+    let gossip = gossip::gossip(token.clone());
     let killer = killer(token);
-    try_join!(http, rpc, killer)?;
+    try_join!(http, rpc, gossip, killer)?;
     Ok(())
 }

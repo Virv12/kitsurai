@@ -135,10 +135,6 @@ impl Rpc for ItemGet {
     type Request = Operations;
     type Response = Result<Option<Bytes>, store::Error>;
 
-    fn into_variant(self) -> Self::Request {
-        Operations::ItemGet(self)
-    }
-
     async fn handle(self) -> Result<Self::Response> {
         Ok(store::item_get(self.table, &self.key).map(|opt| opt.map(Bytes::from)))
     }
@@ -155,10 +151,6 @@ impl Rpc for ItemSet {
     type Request = Operations;
     type Response = Result<(), store::Error>;
 
-    fn into_variant(self) -> Self::Request {
-        Operations::ItemSet(self)
-    }
-
     async fn handle(self) -> Result<Self::Response> {
         Ok(store::item_set(self.table, &self.key, &self.value))
     }
@@ -172,10 +164,6 @@ pub(crate) struct ItemList {
 impl Rpc for ItemList {
     type Request = Operations;
     type Response = Result<Vec<(Vec<u8>, Vec<u8>)>, store::Error>;
-
-    fn into_variant(self) -> Self::Request {
-        Operations::ItemList(self)
-    }
 
     async fn handle(self) -> Result<Self::Response> {
         Ok(store::item_list(self.table))

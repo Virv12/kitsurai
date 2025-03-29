@@ -20,6 +20,16 @@ pub(crate) enum TableStatus {
     Deleted,
 }
 
+impl TableStatus {
+    fn age(&self) -> usize {
+        match self {
+            TableStatus::Prepared { .. } => 1,
+            TableStatus::Created(_) => 2,
+            TableStatus::Deleted => 3,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, Copy)]
 pub(crate) struct TableParams {
     pub(crate) b: u64,
@@ -63,14 +73,14 @@ impl TableData {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct Table {
     pub(crate) id: Uuid,
     pub(crate) status: TableStatus,
 }
 
 static LOCK: Mutex<()> = Mutex::new(());
-static MERKLE: Mutex<Merkle> = Mutex::new(Merkle::new());
+pub(crate) static MERKLE: Mutex<Merkle> = Mutex::new(Merkle::new());
 
 impl Table {
     pub(crate) fn load(id: Uuid) -> Result<Option<Self>> {
@@ -106,7 +116,25 @@ impl Table {
             MERKLE
                 .lock()
                 .expect("poisoned merkle lock")
-                .insert(*self.id.as_bytes(), &blob);
+                .insert(self.id.to_u128_le(), &blob);
+        }
+        Ok(old)
+    }
+
+    pub(crate) fn growing_save(&self) -> Result<Option<Table>> {
+        log::debug!("{} checked_save", self.id);
+        let _guard = LOCK.lock().expect("poisoned lock");
+        let old = Table::load(self.id)?;
+        if old.as_ref().map_or(0, |o| o.status.age()) >= self.status.age() {
+            return Ok(old);
+        }
+        let blob = postcard::to_allocvec(&self.status)?;
+        store::item_set(META, self.id.as_bytes(), &blob)?;
+        if !matches!(self.status, TableStatus::Prepared { .. }) {
+            MERKLE
+                .lock()
+                .expect("poisoned merkle lock")
+                .insert(self.id.to_u128_le(), &blob);
         }
         Ok(old)
     }
@@ -143,11 +171,11 @@ pub(crate) fn init() {
                 }
 
                 let data = postcard::to_allocvec(&table.status).unwrap();
-                MERKLE.lock().unwrap().insert(*table.id.as_bytes(), &data);
+                MERKLE.lock().unwrap().insert(table.id.to_u128_le(), &data);
             }
             TableStatus::Deleted => {
                 let data = postcard::to_allocvec(&table.status).unwrap();
-                MERKLE.lock().unwrap().insert(*table.id.as_bytes(), &data);
+                MERKLE.lock().unwrap().insert(table.id.to_u128_le(), &data);
             }
         }
     }

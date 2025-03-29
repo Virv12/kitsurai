@@ -130,10 +130,6 @@ impl Rpc for TablePrepare {
     type Request = Operations;
     type Response = Result<(String, u64), TableError>;
 
-    fn into_variant(self) -> Self::Request {
-        Operations::TablePrepare(self)
-    }
-
     async fn handle(self) -> anyhow::Result<Self::Response> {
         async fn inner(rpc: TablePrepare) -> Result<(String, u64), TableError> {
             log::info!("{} prepare", rpc.id);
@@ -188,10 +184,6 @@ impl Rpc for TableCommit {
     type Request = Operations;
     type Response = Result<(), TableError>;
 
-    fn into_variant(self) -> Self::Request {
-        Operations::TableCommit(self)
-    }
-
     async fn handle(self) -> anyhow::Result<Self::Response> {
         async fn inner(rpc: TableCommit) -> Result<(), TableError> {
             log::info!("{} commit", rpc.id);
@@ -240,10 +232,6 @@ pub(crate) struct TableDelete {
 impl Rpc for TableDelete {
     type Request = Operations;
     type Response = Result<(), TableError>;
-
-    fn into_variant(self) -> Self::Request {
-        Operations::TableDelete(self)
-    }
 
     async fn handle(self) -> anyhow::Result<Self::Response> {
         async fn inner(rpc: TableDelete) -> Result<(), TableError> {

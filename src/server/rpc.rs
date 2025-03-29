@@ -7,10 +7,8 @@ use tokio::{
 };
 
 pub(crate) trait Rpc: Serialize + DeserializeOwned {
-    type Request: Serialize + DeserializeOwned;
+    type Request: Serialize + DeserializeOwned + From<Self>;
     type Response: Serialize + DeserializeOwned;
-
-    fn into_variant(self) -> Self::Request;
 
     async fn handle(self) -> Result<Self::Response>;
 
@@ -19,7 +17,8 @@ pub(crate) trait Rpc: Serialize + DeserializeOwned {
             self.handle().await
         } else {
             let mut stream = TcpStream::connect(&peer.addr).await?;
-            let bytes = postcard::to_allocvec(&self.into_variant())?;
+            let req: Self::Request = self.into();
+            let bytes = postcard::to_allocvec(&req)?;
             stream.write_all(&bytes).await?;
             stream.shutdown().await?;
 
