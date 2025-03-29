@@ -1,3 +1,5 @@
+//! Implements the client facing HTTP server.
+
 use crate::{
     exec,
     meta::{Table, TableParams, TableStatus},
@@ -17,6 +19,7 @@ use tokio::net::{TcpListener, ToSocketAddrs};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+/// Sets up axum's router and starts listening for requests.
 pub async fn main<A: ToSocketAddrs>(addr: A, token: CancellationToken) -> Result<()> {
     let app = Router::new()
         .route("/", get(table_list))
@@ -36,6 +39,10 @@ pub async fn main<A: ToSocketAddrs>(addr: A, token: CancellationToken) -> Result
     Ok(())
 }
 
+/// Handler for `GET /`<br>
+/// Returns all table metadata.
+///
+/// Internal use only.
 async fn table_list() -> (StatusCode, String) {
     match Table::list() {
         Ok(tables) => (
@@ -72,6 +79,9 @@ async fn table_list() -> (StatusCode, String) {
     }
 }
 
+/// Handler for `POST /`<br>
+/// Creates a table and returns its id if successful.
+/// Expects table parameters in a form string.
 async fn table_create(Form(params): Form<TableParams>) -> (StatusCode, String) {
     match exec::table::table_create(params).await {
         Ok(uuid) => (StatusCode::OK, uuid.to_string() + "\n"),
@@ -79,6 +89,11 @@ async fn table_create(Form(params): Form<TableParams>) -> (StatusCode, String) {
     }
 }
 
+/// Handler for `GET /{table}/{*key}`<br>
+/// Read the key's value.
+///
+/// Returns the first `R` values read if successful, or any read value otherwise.
+/// `R` is a parameter that can be configured per table. See [TableParams].
 async fn item_get(Path((table, key)): Path<(Uuid, Bytes)>) -> (StatusCode, Vec<u8>) {
     match exec::item::item_get(table, key).await {
         Ok(values) => {
@@ -108,6 +123,11 @@ async fn item_get(Path((table, key)): Path<(Uuid, Bytes)>) -> (StatusCode, Vec<u
     }
 }
 
+/// Handler for `POST /{table}/{*key}`<br>
+/// Sets the key's value equal to this request's body.
+///
+/// Returns after `W` successful writes, or reports the failure otherwise.
+/// `R` is a parameter that can be configured per table. See [TableParams].
 async fn item_set(Path((table, key)): Path<(Uuid, Bytes)>, body: Bytes) -> (StatusCode, String) {
     match exec::item::item_set(table, key, body).await {
         Ok(()) => (StatusCode::CREATED, "Item set!\n".to_string()),
@@ -115,6 +135,8 @@ async fn item_set(Path((table, key)): Path<(Uuid, Bytes)>, body: Bytes) -> (Stat
     }
 }
 
+/// Handler for `GET /{table}`<br>
+/// Lists this table keys.
 async fn item_list(Path(table): Path<Uuid>) -> (StatusCode, Vec<u8>) {
     async fn inner(table: Uuid) -> Result<Vec<u8>> {
         let mut data = exec::item::item_list(table).await?;

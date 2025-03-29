@@ -1,3 +1,5 @@
+//! Merkle tree implementation, used by the gossip protocol.
+
 use serde::{Deserialize, Serialize};
 use std::{fmt::Display, hash::Hasher, net::Ipv6Addr};
 

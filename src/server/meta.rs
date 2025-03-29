@@ -1,3 +1,5 @@
+//! Handles table metadata, exposing methods to load, save and list metadata.
+
 use crate::{
     merkle::Merkle,
     peer::{self, availability_zone, local_index, Peer},

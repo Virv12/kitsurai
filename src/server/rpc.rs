@@ -1,3 +1,5 @@
+//! Defines traits and common functions for executing RPCs.
+
 use crate::peer::Peer;
 use anyhow::Result;
 use serde::{de::DeserializeOwned, Serialize};

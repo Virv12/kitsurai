@@ -1,3 +1,6 @@
+//! Handles Peer discovery (see [Discovery]) and self identification.
+//! Also handles this peer availability zone.
+
 use clap::Parser;
 use rand::Rng;
 use std::{

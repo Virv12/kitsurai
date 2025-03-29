@@ -1,3 +1,6 @@
+//! Implements RPCs and uses them to execute actions on the cluster.<br>
+//! Exposes methods for client's usage.
+
 pub mod gossip;
 pub mod item;
 pub mod table;
