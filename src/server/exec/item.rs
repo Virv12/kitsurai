@@ -126,7 +126,7 @@ pub async fn item_list(table: Uuid) -> Result<Vec<(String, Vec<(Vec<u8>, Vec<u8>
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct ItemGet {
+pub struct ItemGet {
     table: Uuid,
     key: Bytes,
 }
@@ -141,7 +141,7 @@ impl Rpc for ItemGet {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct ItemSet {
+pub struct ItemSet {
     table: Uuid,
     key: Bytes,
     value: Bytes,
@@ -157,7 +157,7 @@ impl Rpc for ItemSet {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct ItemList {
+pub struct ItemList {
     table: Uuid,
 }
 

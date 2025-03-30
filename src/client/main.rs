@@ -1,15 +1,23 @@
 use clap::{Parser, Subcommand};
 use kitsurai::codec::Header;
-use reqwest::{Body, IntoUrl};
+use reqwest::Body;
 use serde::Serialize;
 use std::{ffi::OsString, os::unix::ffi::OsStringExt};
 use tokio::fs::File;
 use uuid::Uuid;
 
+#[derive(Parser, Serialize, Debug, Clone, Copy)]
+struct TableParams {
+    b: u64,
+    n: u64,
+    w: u64,
+    r: u64,
+}
+
 #[derive(Subcommand, Debug, Clone)]
 enum TableActions {
     #[command(alias = "c")]
-    Create { b: u64, n: u64, r: u64, w: u64 },
+    Create(TableParams),
     #[command(alias = "ls")]
     List,
 }
@@ -63,33 +71,18 @@ struct Args {
     action: Actions,
 }
 
-async fn post(url: impl IntoUrl, value: impl Into<Body>) -> anyhow::Result<()> {
-    let client = reqwest::Client::new();
-    let res = client.post(url).body(value).send().await?;
-    println!("{}: {}", res.status(), res.text().await?.trim_end());
-    Ok(())
-}
-
-#[derive(Serialize)]
-struct TableParams {
-    b: u64,
-    n: u64,
-    w: u64,
-    r: u64,
-}
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let Args { server, action } = Args::parse();
 
     match action {
         Actions::Table {
-            action: TableActions::Create { b, n, r, w },
+            action: TableActions::Create(params),
         } => {
             let client = reqwest::Client::new();
             let res = client
                 .post(format!("http://{server}"))
-                .form(&TableParams { b, n, w, r })
+                .form(&params)
                 .send()
                 .await?;
             println!("{}: {}", res.status(), res.text().await?.trim_end());
@@ -126,11 +119,14 @@ async fn main() -> anyhow::Result<()> {
             action: ItemActions::Set { file, key, value },
         } => {
             let url = format!("http://{server}/{table}/{key}");
-            if !file {
-                post(url, value.into_vec()).await?
+            let body: Body = if !file {
+                value.into_vec().into()
             } else {
-                post(url, File::open(value).await?).await?
-            }
+                File::open(value).await?.into()
+            };
+            let client = reqwest::Client::new();
+            let res = client.post(url).body(body).send().await?;
+            println!("{}: {}", res.status(), res.text().await?.trim_end());
         }
         Actions::Item {
             table,

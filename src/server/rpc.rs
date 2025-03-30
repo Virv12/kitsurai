@@ -6,7 +6,7 @@ use tokio::{
     net::TcpStream,
 };
 
-pub(crate) trait Rpc: Serialize + DeserializeOwned {
+pub trait Rpc: Serialize + DeserializeOwned {
     type Request: Serialize + DeserializeOwned + From<Self>;
     type Response: Serialize + DeserializeOwned;
 

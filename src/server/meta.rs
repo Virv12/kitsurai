@@ -17,7 +17,7 @@ const META: Uuid = Uuid::new_v8(*b"kitsuraimetadata");
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub(crate) enum TableStatus {
+pub enum TableStatus {
     Prepared { allocated: u64 },
     Created(TableData),
     Deleted,
@@ -34,17 +34,17 @@ impl TableStatus {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy)]
-pub(crate) struct TableParams {
-    pub(crate) b: u64,
-    pub(crate) n: u64,
-    pub(crate) r: u64,
-    pub(crate) w: u64,
+pub struct TableParams {
+    pub b: u64,
+    pub n: u64,
+    pub r: u64,
+    pub w: u64,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub(crate) struct TableData {
-    pub(crate) allocation: BTreeMap<(String, u64), u64>,
-    pub(crate) params: TableParams,
+pub struct TableData {
+    pub allocation: BTreeMap<(String, u64), u64>,
+    pub params: TableParams,
 }
 
 impl TableData {
@@ -65,10 +65,7 @@ impl TableData {
 
         &peer::peers()[index as usize]
     }
-    pub(crate) fn peers_for_key(
-        &self,
-        key: &[u8],
-    ) -> impl Iterator<Item = &'static Peer> + use<'_> {
+    pub fn peers_for_key(&self, key: &[u8]) -> impl Iterator<Item = &'static Peer> + use<'_> {
         let hash = xxh3_64(key);
         let TableParams { b, n, .. } = self.params;
         let virt = ((hash as u128 * (b * n) as u128) >> 64) as u64;
@@ -77,16 +74,16 @@ impl TableData {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct Table {
-    pub(crate) id: Uuid,
-    pub(crate) status: TableStatus,
+pub struct Table {
+    pub id: Uuid,
+    pub status: TableStatus,
 }
 
 static LOCK: Mutex<()> = Mutex::new(());
-pub(crate) static MERKLE: Mutex<Merkle> = Mutex::new(Merkle::new());
+pub static MERKLE: Mutex<Merkle> = Mutex::new(Merkle::new());
 
 impl Table {
-    pub(crate) fn load(id: Uuid) -> Result<Option<Self>> {
+    pub fn load(id: Uuid) -> Result<Option<Self>> {
         log::debug!("{id} load");
         let blob = store::item_get(META, id.as_bytes())?;
         let table = blob.map(|blob| Self {
@@ -96,7 +93,7 @@ impl Table {
         Ok(table)
     }
 
-    pub(crate) fn list() -> Result<Vec<Self>> {
+    pub fn list() -> Result<Vec<Self>> {
         log::debug!("list");
         let tables = store::item_list(META)?
             .into_iter()
@@ -109,7 +106,7 @@ impl Table {
         Ok(tables)
     }
 
-    pub(crate) fn save(&self) -> Result<Option<Table>> {
+    pub fn save(&self) -> Result<Option<Table>> {
         log::debug!("{} save", self.id);
         let _guard = LOCK.lock().expect("poisoned lock");
         let old = Table::load(self.id)?;
@@ -124,7 +121,7 @@ impl Table {
         Ok(old)
     }
 
-    pub(crate) fn growing_save(&self) -> Result<Option<Table>> {
+    pub fn growing_save(&self) -> Result<Option<Table>> {
         log::debug!("{} checked_save", self.id);
         let _guard = LOCK.lock().expect("poisoned lock");
         let old = Table::load(self.id)?;
@@ -142,7 +139,7 @@ impl Table {
         Ok(old)
     }
 
-    pub(crate) fn delete_if_prepared(id: Uuid) {
+    pub fn delete_if_prepared(id: Uuid) {
         log::debug!("{id} delete_if_prepared");
         let _guard = LOCK.lock().expect("poisoned lock");
         let mut table = Table::load(id).ok().flatten().expect("table should exists");
@@ -157,7 +154,7 @@ impl Table {
     }
 }
 
-pub(crate) fn init() {
+pub fn init() {
     log::info!("Initialize meta");
     for mut table in Table::list().expect("could not get table list") {
         match table.status {

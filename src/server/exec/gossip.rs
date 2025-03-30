@@ -13,7 +13,7 @@ use tokio::{task::JoinHandle, time::sleep};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-pub(crate) async fn gossip(token: CancellationToken) -> Result<()> {
+pub async fn gossip(token: CancellationToken) -> Result<()> {
     loop {
         tokio::select! {
             _ = token.cancelled() => break,
@@ -85,7 +85,7 @@ async fn sync(peer: &'static Peer, path: merkle::Path) -> Result<()> {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct GossipSync {
+pub struct GossipSync {
     id: Uuid,
     table: Option<TableStatus>,
 }
@@ -109,7 +109,7 @@ impl Rpc for GossipSync {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct GossipFind {
+pub struct GossipFind {
     path: merkle::Path,
 }
 

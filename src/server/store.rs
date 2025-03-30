@@ -7,7 +7,7 @@ use uuid::Uuid;
 static STORE_PATH: OnceLock<PathBuf> = OnceLock::new();
 
 #[derive(Debug, Parser)]
-pub(crate) struct StoreCli {
+pub struct StoreCli {
     #[arg(long, default_value = "store.db")]
     store_path: PathBuf,
 }
@@ -19,7 +19,7 @@ thread_local! {
     };
 }
 
-pub(crate) fn init(cli: StoreCli) -> anyhow::Result<()> {
+pub fn init(cli: StoreCli) -> anyhow::Result<()> {
     log::info!("Initialize store at {}", cli.store_path.display());
     STORE_PATH
         .set(cli.store_path)
@@ -39,9 +39,9 @@ pub(crate) fn init(cli: StoreCli) -> anyhow::Result<()> {
 }
 
 #[derive(thiserror::Error, Serialize, Deserialize, Debug, Clone)]
-pub(crate) enum Error {}
+pub enum Error {}
 
-pub(crate) fn item_get(table: Uuid, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
+pub fn item_get(table: Uuid, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
     log::debug!("{table} get");
     SQLITE.with(|conn| {
         Ok(conn
@@ -55,7 +55,7 @@ pub(crate) fn item_get(table: Uuid, key: &[u8]) -> Result<Option<Vec<u8>>, Error
     })
 }
 
-pub(crate) fn item_set(table: Uuid, key: &[u8], value: &[u8]) -> Result<(), Error> {
+pub fn item_set(table: Uuid, key: &[u8], value: &[u8]) -> Result<(), Error> {
     log::debug!("{table} set");
     SQLITE.with(|conn| {
         conn.execute(
@@ -67,9 +67,9 @@ pub(crate) fn item_set(table: Uuid, key: &[u8], value: &[u8]) -> Result<(), Erro
     Ok(())
 }
 
-pub(crate) type KeyValue = (Vec<u8>, Vec<u8>);
+pub type KeyValue = (Vec<u8>, Vec<u8>);
 
-pub(crate) fn item_list(table: Uuid) -> Result<Vec<KeyValue>, Error> {
+pub fn item_list(table: Uuid) -> Result<Vec<KeyValue>, Error> {
     log::debug!("{table} list");
     SQLITE.with(|conn| {
         let mut stmt = conn

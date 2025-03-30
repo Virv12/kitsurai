@@ -1,30 +1,30 @@
 use serde::{Deserialize, Serialize};
-use std::{fmt::Display, net::Ipv6Addr};
+use std::{fmt::Display, hash::Hasher, net::Ipv6Addr};
 
 #[derive(Debug, Serialize, Deserialize, Default, Copy, Clone, Eq, PartialEq)]
-pub(crate) struct Path {
-    pub(crate) id: u128,
-    pub(crate) prefix: u8,
+pub struct Path {
+    pub id: u128,
+    pub prefix: u8,
 }
 
 impl Path {
-    pub(crate) fn root() -> Self {
+    pub fn root() -> Self {
         Self { id: 0, prefix: 0 }
     }
 
-    pub(crate) fn leaf(id: u128) -> Self {
+    pub fn leaf(id: u128) -> Self {
         Self { id, prefix: 128 }
     }
 
-    pub(crate) fn is_leaf(self) -> bool {
+    pub fn is_leaf(self) -> bool {
         self.prefix == 128
     }
 
-    pub(crate) fn contains(self, other: Self) -> bool {
+    pub fn contains(self, other: Self) -> bool {
         self.prefix <= other.prefix && (self.id ^ other.id) & ((1 << self.prefix) - 1) == 0
     }
 
-    pub(crate) fn children(self) -> Option<(Path, Path)> {
+    pub fn children(self) -> Option<(Path, Path)> {
         if self.prefix == 128 {
             return None;
         }
@@ -40,7 +40,7 @@ impl Path {
         Some((left, right))
     }
 
-    pub(crate) fn lca(self, other: Self) -> Self {
+    pub fn lca(self, other: Self) -> Self {
         let prefix = (self.id ^ other.id).trailing_zeros() as u8;
         let prefix = prefix.min(self.prefix).min(other.prefix);
         let id = self.id & ((1 << prefix) - 1);
@@ -102,10 +102,9 @@ fn insert(tree: Tree, id: u128, hash: u128) -> Tree {
         node.left = insert(node.left, id, hash);
     }
 
-    let mut data = [0; 48];
-    data[..16].copy_from_slice(&node.path.id.to_le_bytes());
-    data[16..32].copy_from_slice(&node.left.as_ref().unwrap().hash.to_le_bytes());
-    data[32..].copy_from_slice(&node.right.as_ref().unwrap().hash.to_le_bytes());
+    let mut data = [0; 32];
+    data[..16].copy_from_slice(&node.left.as_ref().unwrap().hash.to_le_bytes());
+    data[16..].copy_from_slice(&node.right.as_ref().unwrap().hash.to_le_bytes());
     node.hash = xxhash_rust::xxh3::xxh3_128(&data);
     Some(node)
 }
@@ -133,21 +132,24 @@ fn find(mut tree: &Tree, path: Path) -> Option<(Path, u128)> {
 }
 
 #[derive(Debug, Eq, PartialEq)]
-pub(crate) struct Merkle {
+pub struct Merkle {
     tree: Tree,
 }
 
 impl Merkle {
-    pub(crate) const fn new() -> Self {
+    pub const fn new() -> Self {
         Self { tree: None }
     }
 
-    pub(crate) fn insert(&mut self, id: u128, data: &[u8]) {
-        let hash = xxhash_rust::xxh3::xxh3_128(data);
+    pub fn insert(&mut self, id: u128, data: &[u8]) {
+        let mut xxh3 = xxhash_rust::xxh3::Xxh3::new();
+        xxh3.write_u128(id);
+        xxh3.write(data);
+        let hash = xxh3.digest128();
         self.tree = insert(self.tree.take(), id, hash);
     }
 
-    pub(crate) fn find(&self, path: Path) -> Option<(Path, u128)> {
+    pub fn find(&self, path: Path) -> Option<(Path, u128)> {
         find(&self.tree, path)
     }
 }

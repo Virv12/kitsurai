@@ -12,30 +12,30 @@ static LOCAL_INDEX: OnceLock<usize> = OnceLock::new();
 static AVAILABILITY_ZONE: OnceLock<String> = OnceLock::new();
 
 #[derive(Clone, Debug, Ord, PartialOrd, Eq, PartialEq)]
-pub(crate) struct Peer {
+pub struct Peer {
     pub addr: String,
     _marker: (),
 }
 
 impl Peer {
-    pub(crate) fn is_local(&self) -> bool {
+    pub fn is_local(&self) -> bool {
         std::ptr::eq(self, local())
     }
 }
 
-pub(crate) fn peers() -> &'static [Peer] {
+pub fn peers() -> &'static [Peer] {
     PEERS.get().expect("peers list is uninitialized")
 }
 
-pub(crate) fn local_index() -> usize {
+pub fn local_index() -> usize {
     *LOCAL_INDEX.get().expect("local index is uninitialized")
 }
 
-pub(crate) fn local() -> &'static Peer {
+pub fn local() -> &'static Peer {
     &peers()[local_index()]
 }
 
-pub(crate) fn availability_zone() -> &'static str {
+pub fn availability_zone() -> &'static str {
     AVAILABILITY_ZONE
         .get()
         .expect("availability zone is uninitialized")
@@ -58,7 +58,7 @@ impl Discovery {
 }
 
 #[derive(Debug, Parser)]
-pub(crate) struct PeerCli {
+pub struct PeerCli {
     #[arg(long = "peers", value_parser = Discovery::value_parser)]
     discovery: Discovery,
 
@@ -66,7 +66,7 @@ pub(crate) struct PeerCli {
     availability_zone: Option<String>,
 }
 
-pub(crate) fn init(cli: PeerCli, local_addr: SocketAddr) {
+pub fn init(cli: PeerCli, local_addr: SocketAddr) {
     let mut peers: Vec<_> = match &cli.discovery {
         Discovery::Dns(v) => v
             .to_socket_addrs()

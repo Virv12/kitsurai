@@ -22,7 +22,7 @@ use uuid::Uuid;
 static PENDING: Mutex<BTreeMap<Uuid, JoinHandle<()>>> = Mutex::new(BTreeMap::new());
 
 #[derive(Error, Debug, Serialize, Deserialize)]
-pub(crate) enum TableError {
+pub enum TableError {
     #[error("could not store table")]
     Store,
     #[error("could not store table")]
@@ -33,7 +33,7 @@ pub(crate) enum TableError {
     TooMuchBandwidth,
 }
 
-pub(crate) async fn table_create(
+pub async fn table_create(
     params @ TableParams { mut b, n, r, w }: TableParams,
 ) -> anyhow::Result<Uuid> {
     let id = Uuid::now_v7();
@@ -123,7 +123,7 @@ pub(crate) async fn table_create(
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct TablePrepare {
+pub struct TablePrepare {
     id: Uuid,
     request: u64,
 }
@@ -177,7 +177,7 @@ impl Rpc for TablePrepare {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct TableCommit {
+pub struct TableCommit {
     id: Uuid,
     table: TableData,
 }
@@ -227,7 +227,7 @@ impl Rpc for TableCommit {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct TableDelete {
+pub struct TableDelete {
     id: Uuid,
 }
 

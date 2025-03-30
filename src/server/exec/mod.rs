@@ -1,6 +1,6 @@
-pub(crate) mod gossip;
-pub(crate) mod item;
-pub(crate) mod table;
+pub mod gossip;
+pub mod item;
+pub mod table;
 
 use crate::{
     exec::{
@@ -26,15 +26,15 @@ async fn keep_peer<O>(peer: &Peer, task: impl Future<Output = O>) -> (&Peer, O) 
 }
 
 #[derive(Debug, Serialize, Deserialize, From)]
-pub(crate) enum Operations {
+pub enum Operations {
     ItemGet(ItemGet),
     ItemSet(ItemSet),
     ItemList(ItemList),
     TablePrepare(TablePrepare),
     TableCommit(TableCommit),
     TableDelete(TableDelete),
-    Gossip(GossipSync),
-    MerkleFind(GossipFind),
+    GossipSync(GossipSync),
+    GossipFind(GossipFind),
 }
 
 impl Operations {
@@ -46,15 +46,12 @@ impl Operations {
             Operations::TablePrepare(_) => "table-prepare",
             Operations::TableCommit(_) => "table-commit",
             Operations::TableDelete(_) => "table-delete",
-            Operations::Gossip(_) => "gossip",
-            Operations::MerkleFind(_) => "merkle-find",
+            Operations::GossipSync(_) => "gossip-sync",
+            Operations::GossipFind(_) => "gossip-find",
         }
     }
 
-    pub(crate) async fn listener(
-        listener: TcpListener,
-        token: CancellationToken,
-    ) -> anyhow::Result<()> {
+    pub async fn listener(listener: TcpListener, token: CancellationToken) -> anyhow::Result<()> {
         async fn recv(mut stream: TcpStream) -> anyhow::Result<()> {
             let mut buffer = Vec::new();
             stream.read_to_end(&mut buffer).await?;
@@ -68,8 +65,8 @@ impl Operations {
                 Operations::TablePrepare(prepare) => prepare.remote(stream).await,
                 Operations::TableCommit(commit) => commit.remote(stream).await,
                 Operations::TableDelete(delete) => delete.remote(stream).await,
-                Operations::Gossip(gossip) => gossip.remote(stream).await,
-                Operations::MerkleFind(find) => find.remote(stream).await,
+                Operations::GossipSync(sync) => sync.remote(stream).await,
+                Operations::GossipFind(find) => find.remote(stream).await,
             }
         }
 
