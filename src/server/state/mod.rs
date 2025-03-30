@@ -11,7 +11,6 @@ use clap::Parser;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
-    process::exit,
     sync::{
         atomic::{AtomicU64, Ordering},
         Mutex, RwLock,
@@ -102,6 +101,19 @@ impl Table {
         Ok(table)
     }
 
+    fn save_inner(&self) -> Result<Option<Table>> {
+        let old = Table::load(self.id)?;
+        let blob = postcard::to_allocvec(&self.status)?;
+        store::item_set(META, self.id.as_bytes(), &blob)?;
+        if !matches!(self.status, TableStatus::Prepared { .. }) {
+            MERKLE
+                .lock()
+                .expect("poisoned merkle lock")
+                .insert(self.id.to_u128_le(), &blob);
+        }
+        Ok(old)
+    }
+
     pub fn list() -> Result<Vec<Self>> {
         log::debug!("list");
         let tables = store::item_list(META)?
@@ -118,16 +130,7 @@ impl Table {
     pub fn save(&self) -> Result<Option<Table>> {
         log::debug!("{} save", self.id);
         let _guard = LOCK.write().expect("poisoned lock");
-        let old = Table::load(self.id)?;
-        let blob = postcard::to_allocvec(&self.status)?;
-        store::item_set(META, self.id.as_bytes(), &blob)?;
-        if !matches!(self.status, TableStatus::Prepared { .. }) {
-            MERKLE
-                .lock()
-                .expect("poisoned merkle lock")
-                .insert(self.id.to_u128_le(), &blob);
-        }
-        Ok(old)
+        self.save_inner()
     }
 
     pub fn growing_save(&self) -> Result<Option<Table>> {
@@ -137,29 +140,39 @@ impl Table {
         if old.as_ref().map_or(0, |o| o.status.age()) >= self.status.age() {
             return Ok(old);
         }
-        let blob = postcard::to_allocvec(&self.status)?;
-        store::item_set(META, self.id.as_bytes(), &blob)?;
-        if !matches!(self.status, TableStatus::Prepared { .. }) {
-            MERKLE
-                .lock()
-                .expect("poisoned merkle lock")
-                .insert(self.id.to_u128_le(), &blob);
-        }
-        Ok(old)
+        self.save_inner()
     }
 
-    pub fn delete_if_prepared(id: Uuid) {
+    pub fn delete_if_prepared(id: Uuid) -> Result<()> {
         log::debug!("{id} delete_if_prepared");
         let _guard = LOCK.write().expect("poisoned lock");
         let mut table = Table::load(id).ok().flatten().expect("table should exists");
-
         if let TableStatus::Prepared { allocated } = table.status {
-            BANDWIDTH.fetch_add(allocated, Ordering::Relaxed);
             table.status = TableStatus::Deleted;
-            if table.save().is_err() {
-                exit(1);
-            }
+            table.save_inner()?;
+            bandwidth_free(allocated);
         }
+        Ok(())
+    }
+
+    pub fn delete(id: Uuid) -> Result<()> {
+        log::debug!("{id} delete");
+        let _guard = LOCK.write().expect("poisoned lock");
+        let mut table = Table::load(id).ok().flatten().expect("table should exists");
+        let allocated = match table.status {
+            TableStatus::Prepared { allocated } => allocated,
+            TableStatus::Created(ref data) => data
+                .allocation
+                .get(&(availability_zone().to_owned(), local_index() as u64))
+                .copied()
+                .unwrap_or(0),
+            _ => 0,
+        };
+        table.status = TableStatus::Deleted;
+        table.save_inner()?;
+        bandwidth_free(allocated);
+        store::table_delete(id)?;
+        Ok(())
     }
 }
 

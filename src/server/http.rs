@@ -9,7 +9,7 @@ use axum::{
     body::Bytes,
     extract::{DefaultBodyLimit, Path},
     http::StatusCode,
-    routing::{get, post},
+    routing::{delete, get, post},
     Form, Router,
 };
 use kitsurai::codec::Header;
@@ -23,8 +23,8 @@ pub async fn main<A: ToSocketAddrs>(addr: A, token: CancellationToken) -> Result
     let app = Router::new()
         .route("/", get(table_list))
         .route("/", post(table_create))
+        .route("/{table}", delete(table_delete))
         .route("/{table}", get(item_list))
-        // .route("/{table}", delete(table_create))
         .route("/{table}/{*key}", get(item_get))
         .route(
             "/{table}/{*key}",
@@ -62,10 +62,7 @@ async fn table_list() -> (StatusCode, String) {
                         t.params.w,
                         t.allocation
                             .into_iter()
-                            .map(|((az, i), b)| format!(
-                                "{b}@{az}#{}",
-                                peer::peers()[i as usize].addr
-                            ))
+                            .map(|((_, i), b)| format!("{b}@{}", peer::peers()[i as usize].addr))
                             .collect::<Vec<String>>()
                             .join(", ")
                     ))
@@ -85,6 +82,15 @@ async fn table_create(Form(params): Form<TableParams>) -> (StatusCode, String) {
     match exec::table::table_create(params).await {
         Ok(uuid) => (StatusCode::OK, uuid.to_string() + "\n"),
         Err(err) => (StatusCode::BAD_REQUEST, err.to_string() + "\n"),
+    }
+}
+
+/// Handler for `DELETE /{table}`<br>
+/// Deletes the table.
+async fn table_delete(Path(table): Path<Uuid>) -> (StatusCode, String) {
+    match exec::table::table_delete(table).await {
+        Ok(()) => (StatusCode::OK, "Table deleted!\n".to_string()),
+        Err(e) => (StatusCode::BAD_REQUEST, format!("{e}\n")),
     }
 }
 

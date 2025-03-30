@@ -9,11 +9,12 @@ A kitsurai cluster is composed of a static list of nodes which might momentarily
 ### API
 
 Each node exposes an HTTP API with the following endpoints:
-- `GET  /`: list the tables.
-- `POST /`: create a table.
-- `GET  /{table}`: list the keys in the table.
-- `POST /{table}/{key}`: write a key-value pair.
-- `GET  /{table}/{key}`: read a key-value pair.
+- `GET    /`: list the tables.
+- `POST   /`: create a table.
+- `GET    /{table}`: list the keys in the table.
+- `DELETE /{table}`: delete a table.
+- `POST   /{table}/{key}`: write a key-value pair.
+- `GET    /{table}/{key}`: read a key-value pair.
 
 The client can send its requests to any node in the cluster.
 The node will forward the request to the correct nodes and return the result to the client.

@@ -101,3 +101,12 @@ pub fn item_list(table: Uuid) -> Result<Vec<KeyValue>, Error> {
         Ok(rows.map(Result::unwrap).collect())
     })
 }
+
+pub fn table_delete(table: Uuid) -> Result<(), Error> {
+    log::debug!("{table} destroy");
+    SQLITE.with(|conn| {
+        conn.execute("DELETE FROM store WHERE tbl = ?", [table.as_bytes()])
+            .unwrap();
+    });
+    Ok(())
+}

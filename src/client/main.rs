@@ -20,6 +20,8 @@ enum TableActions {
     Create(TableParams),
     #[command(alias = "ls")]
     List,
+    #[command(alias = "d")]
+    Delete { table: Uuid },
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -92,6 +94,16 @@ async fn main() -> anyhow::Result<()> {
         } => {
             let res = reqwest::get(format!("http://{server}")).await?;
             println!("{}\n{}", res.status(), res.text().await?.trim_end());
+        }
+        Actions::Table {
+            action: TableActions::Delete { table },
+        } => {
+            let client = reqwest::Client::new();
+            let res = client
+                .delete(format!("http://{server}/{table}"))
+                .send()
+                .await?;
+            println!("{}: {}", res.status(), res.text().await?.trim_end());
         }
         Actions::Item {
             table,

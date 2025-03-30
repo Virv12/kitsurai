@@ -22,8 +22,12 @@ impl Path {
         self.prefix == 128
     }
 
+    fn mask(prefix: u8) -> u128 {
+        1u128.checked_shl(prefix as _).unwrap_or(0).wrapping_sub(1)
+    }
+
     pub fn contains(self, other: Self) -> bool {
-        self.prefix <= other.prefix && (self.id ^ other.id) & ((1 << self.prefix) - 1) == 0
+        self.prefix <= other.prefix && (self.id ^ other.id) & Self::mask(self.prefix) == 0
     }
 
     pub fn children(self) -> Option<(Path, Path)> {
@@ -45,7 +49,7 @@ impl Path {
     pub fn lca(self, other: Self) -> Self {
         let prefix = (self.id ^ other.id).trailing_zeros() as u8;
         let prefix = prefix.min(self.prefix).min(other.prefix);
-        let id = self.id & ((1 << prefix) - 1);
+        let id = self.id & Self::mask(prefix);
         Self { id, prefix }
     }
 }

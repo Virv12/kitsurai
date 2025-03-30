@@ -148,7 +148,7 @@ impl Rpc for TablePrepare {
                 tokio::spawn(async move {
                     sleep(PREPARE_TIME).await;
 
-                    Table::delete_if_prepared(rpc.id);
+                    Table::delete_if_prepared(rpc.id).expect("could not delete table");
 
                     PENDING.lock().expect("poisoned lock").remove(&rpc.id);
                 }),
@@ -221,35 +221,28 @@ impl Rpc for TableDelete {
     type Response = Result<(), TableError>;
 
     async fn handle(self) -> anyhow::Result<Self::Response> {
-        async fn inner(rpc: TableDelete) -> Result<(), TableError> {
-            let Some(old) = Table {
-                id: rpc.id,
-                status: TableStatus::Deleted,
-            }
-            .save()
-            .map_err(|_| Store)?
-            else {
-                return Ok(());
-            };
-
-            match old.status {
-                TableStatus::Prepared { allocated } => {
-                    state::bandwidth_free(allocated);
-                }
-                TableStatus::Created(data) => {
-                    if let Some(&allocated) = data
-                        .allocation
-                        .get(&(availability_zone().to_owned(), local_index() as u64))
-                    {
-                        state::bandwidth_free(allocated);
-                    }
-                }
-                TableStatus::Deleted => {}
-            }
-
-            Ok(())
-        }
-
-        Ok(inner(self).await)
+        Ok(Table::delete(self.id).map_err(|_| Store))
     }
+}
+
+pub async fn table_delete(id: Uuid) -> anyhow::Result<()> {
+    log::info!("{} delete", id);
+
+    let table = Table::load(id)?;
+    let Some(table) = table else {
+        bail!("Table not found");
+    };
+    let TableStatus::Created(data) = table.status else {
+        bail!("Invalid table");
+    };
+
+    let mut set = JoinSet::new();
+    for &(_, peer_id) in data.allocation.keys() {
+        let rpc = TableDelete { id };
+        set.spawn(rpc.exec(&peer::peers()[peer_id as usize]));
+    }
+    set.join_all().await;
+
+    Table::delete(id)?;
+    Ok(())
 }

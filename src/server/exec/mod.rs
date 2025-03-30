@@ -59,7 +59,7 @@ impl Operations {
             let mut buffer = Vec::new();
             stream.read_to_end(&mut buffer).await?;
             let variant: Operations = postcard::from_bytes(&buffer)?;
-            log::info!("Request from {}: {}", stream.peer_addr()?, variant.name());
+            log::debug!("Request from {}: {}", stream.peer_addr()?, variant.name());
 
             match variant {
                 Operations::ItemGet(get) => get.remote(stream).await,
