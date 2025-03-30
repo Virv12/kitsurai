@@ -14,14 +14,12 @@ use std::{
     process::exit,
     sync::{
         atomic::{AtomicU64, Ordering},
-        Mutex,
+        Mutex, RwLock,
     },
 };
 use store::KeyValue;
 use uuid::Uuid;
 use xxhash_rust::xxh3::xxh3_64;
-
-pub use store::Error as StoreError;
 
 const META: Uuid = Uuid::new_v8(*b"kitsuraimetadata");
 
@@ -84,7 +82,7 @@ impl TableData {
     }
 }
 
-static LOCK: Mutex<()> = Mutex::new(());
+static LOCK: RwLock<()> = RwLock::new(());
 static MERKLE: Mutex<Merkle> = Mutex::new(Merkle::new());
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -119,7 +117,7 @@ impl Table {
 
     pub fn save(&self) -> Result<Option<Table>> {
         log::debug!("{} save", self.id);
-        let _guard = LOCK.lock().expect("poisoned lock");
+        let _guard = LOCK.write().expect("poisoned lock");
         let old = Table::load(self.id)?;
         let blob = postcard::to_allocvec(&self.status)?;
         store::item_set(META, self.id.as_bytes(), &blob)?;
@@ -134,7 +132,7 @@ impl Table {
 
     pub fn growing_save(&self) -> Result<Option<Table>> {
         log::debug!("{} checked_save", self.id);
-        let _guard = LOCK.lock().expect("poisoned lock");
+        let _guard = LOCK.write().expect("poisoned lock");
         let old = Table::load(self.id)?;
         if old.as_ref().map_or(0, |o| o.status.age()) >= self.status.age() {
             return Ok(old);
@@ -152,7 +150,7 @@ impl Table {
 
     pub fn delete_if_prepared(id: Uuid) {
         log::debug!("{id} delete_if_prepared");
-        let _guard = LOCK.lock().expect("poisoned lock");
+        let _guard = LOCK.write().expect("poisoned lock");
         let mut table = Table::load(id).ok().flatten().expect("table should exists");
 
         if let TableStatus::Prepared { allocated } = table.status {
@@ -212,16 +210,39 @@ pub fn init(cli: StateCli) {
     }
 }
 
-pub fn item_get(table: Uuid, key: &[u8]) -> Result<Option<Vec<u8>>, store::Error> {
-    store::item_get(table, key)
+#[derive(thiserror::Error, Debug, Serialize, Deserialize, Clone)]
+pub enum Error {
+    #[error("table not found")]
+    TableNotFound,
+    #[error("store error")]
+    Store(#[from] store::Error),
 }
 
-pub fn item_set(table: Uuid, key: &[u8], value: &[u8]) -> Result<(), store::Error> {
-    store::item_set(table, key, value)
+pub fn item_get(table_id: Uuid, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
+    let _guard = LOCK.read().expect("poisoned lock");
+    let table = Table::load(table_id).unwrap();
+    if !table.is_some_and(|t| matches!(t.status, TableStatus::Created(_))) {
+        return Err(Error::TableNotFound);
+    }
+    Ok(store::item_get(table_id, key)?)
 }
 
-pub fn item_list(table: Uuid) -> Result<Vec<KeyValue>, store::Error> {
-    store::item_list(table)
+pub fn item_set(table_id: Uuid, key: &[u8], value: &[u8]) -> Result<(), Error> {
+    let _guard = LOCK.read().expect("poisoned lock");
+    let table = Table::load(table_id).unwrap();
+    if !table.is_some_and(|t| matches!(t.status, TableStatus::Created(_))) {
+        return Err(Error::TableNotFound);
+    }
+    Ok(store::item_set(table_id, key, value)?)
+}
+
+pub fn item_list(table_id: Uuid) -> Result<Vec<KeyValue>, Error> {
+    let _guard = LOCK.read().expect("poisoned lock");
+    let table = Table::load(table_id).unwrap();
+    if !table.is_some_and(|t| matches!(t.status, TableStatus::Created(_))) {
+        return Err(Error::TableNotFound);
+    }
+    Ok(store::item_list(table_id)?)
 }
 
 pub fn merkle_find(path: merkle::Path) -> Option<(merkle::Path, u128)> {

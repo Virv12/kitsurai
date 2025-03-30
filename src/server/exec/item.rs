@@ -134,7 +134,7 @@ pub struct ItemGet {
 
 impl Rpc for ItemGet {
     type Request = Operations;
-    type Response = Result<Option<Bytes>, state::StoreError>;
+    type Response = Result<Option<Bytes>, state::Error>;
 
     async fn handle(self) -> Result<Self::Response> {
         Ok(state::item_get(self.table, &self.key).map(|opt| opt.map(Bytes::from)))
@@ -150,7 +150,7 @@ pub struct ItemSet {
 
 impl Rpc for ItemSet {
     type Request = Operations;
-    type Response = Result<(), state::StoreError>;
+    type Response = Result<(), state::Error>;
 
     async fn handle(self) -> Result<Self::Response> {
         Ok(state::item_set(self.table, &self.key, &self.value))
@@ -164,7 +164,7 @@ pub struct ItemList {
 
 impl Rpc for ItemList {
     type Request = Operations;
-    type Response = Result<Vec<(Vec<u8>, Vec<u8>)>, state::StoreError>;
+    type Response = Result<Vec<(Vec<u8>, Vec<u8>)>, state::Error>;
 
     async fn handle(self) -> Result<Self::Response> {
         Ok(state::item_list(self.table))
