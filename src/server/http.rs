@@ -1,9 +1,8 @@
 //! Implements the client facing HTTP server.
 
 use crate::{
-    exec,
-    meta::{Table, TableParams, TableStatus},
-    peer,
+    exec, peer,
+    state::{Table, TableParams, TableStatus},
 };
 use anyhow::Result;
 use axum::{

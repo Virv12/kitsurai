@@ -1,9 +1,9 @@
 use crate::{
     exec::Operations,
     merkle,
-    meta::{self, Table, TableStatus},
     peer::{self, Peer},
     rpc::Rpc,
+    state::{self, Table, TableStatus},
 };
 use anyhow::Result;
 use rand::seq::IndexedRandom;
@@ -37,7 +37,7 @@ pub async fn gossip(token: CancellationToken) -> Result<()> {
 async fn check_sync(peer: &'static Peer, path: merkle::Path) -> Result<()> {
     log::debug!("Gossiping with {} at {}", peer.addr, path);
 
-    let local_node = GossipFind { path }.handle().await?;
+    let local_node = state::merkle_find(path);
     let remote_node = GossipFind { path }.exec(peer).await?;
 
     match (local_node, remote_node) {
@@ -118,10 +118,6 @@ impl Rpc for GossipFind {
     type Response = Option<(merkle::Path, u128)>;
 
     async fn handle(self) -> Result<Self::Response> {
-        let node = meta::MERKLE
-            .lock()
-            .expect("poisoned merkle lock")
-            .find(self.path);
-        Ok(node)
+        Ok(state::merkle_find(self.path))
     }
 }

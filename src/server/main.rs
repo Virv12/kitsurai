@@ -1,19 +1,14 @@
 mod exec;
 mod http;
 mod merkle;
-mod meta;
 mod peer;
 mod rpc;
-mod store;
+mod state;
 
 use crate::exec::{gossip, Operations};
 use anyhow::Result;
 use clap::{arg, Parser};
-use std::{
-    io::Write,
-    sync::atomic::{AtomicU64, Ordering},
-    time::Duration,
-};
+use std::{io::Write, time::Duration};
 use tokio::{net::TcpListener, signal::unix::SignalKind, try_join};
 use tokio_util::sync::CancellationToken;
 
@@ -33,12 +28,6 @@ const TIMEOUT: Duration = Duration::from_secs(1);
 /// Defaults to 60 seconds.
 const PREPARE_TIME: Duration = Duration::from_secs(60);
 
-/// Holds the current available _"bandwidth"_.
-///
-/// Strictly speaking it has no unit and its value can be set semi-arbitrarily.<br>
-/// In practice the unit chosen is the smallest amount that can be allocated by a table.
-static BANDWIDTH: AtomicU64 = AtomicU64::new(0);
-
 /// `ktd`'s configuration and CLI interface.
 #[derive(Parser)]
 #[clap(author, version, about)]
@@ -51,18 +40,12 @@ struct Cli {
     #[arg(long, default_value = "0.0.0.0:3000")]
     rpc_addr: String,
 
-    /// Configuration for the storage backend component.
     #[clap(flatten)]
-    store_cli: store::StoreCli,
+    state_cli: state::StateCli,
 
     /// Configuration for peer discovery.
     #[clap(flatten)]
     peer_cli: peer::PeerCli,
-
-    /// Available _"bandwidth"_ for this peer.
-    /// See [BANDWIDTH] for more details.
-    #[arg(short, long, default_value = "100")]
-    bandwidth: u64,
 }
 
 /// Handles signals received by `ktd`, terminating cleanly.
@@ -109,9 +92,8 @@ async fn main() -> Result<()> {
     let Cli {
         http_addr,
         rpc_addr,
-        store_cli,
+        state_cli,
         peer_cli,
-        bandwidth,
     } = Cli::parse();
 
     logger_init(rpc_addr.clone());
@@ -120,16 +102,8 @@ async fn main() -> Result<()> {
     let listener = TcpListener::bind(rpc_addr).await?;
     // Initialize the static peer list, given our rpc address.
     peer::init(peer_cli, listener.local_addr()?);
-
-    // Initialize the store backend.
-    store::init(store_cli)?;
-
-    // Set the initial bandwidth as given by configuration.
-    BANDWIDTH.store(bandwidth, Ordering::Relaxed);
-
-    // Initialize the table metadata and gossip structures,
-    //  depends on store and bandwidth being initialized.
-    meta::init();
+    // Initialize the table metadata and gossip structures.
+    state::init(state_cli);
 
     // Start the HTTP server and RPC server.
     let token = CancellationToken::new();

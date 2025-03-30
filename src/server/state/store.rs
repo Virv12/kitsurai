@@ -31,7 +31,7 @@ thread_local! {
 /// Initializes the storage global state as specified in the configuration.
 ///
 /// Creates the sqlite table if it does not exist.
-pub fn init(cli: StoreCli) -> anyhow::Result<()> {
+pub fn init(cli: StoreCli) {
     log::info!("Initialize store at {}", cli.store_path.display());
     STORE_PATH
         .set(cli.store_path)
@@ -46,8 +46,8 @@ pub fn init(cli: StoreCli) -> anyhow::Result<()> {
             )",
             [],
         )
-    })?;
-    Ok(())
+        .expect("Failed to create table");
+    });
 }
 
 /// Errors that can be returned by this module's methods.

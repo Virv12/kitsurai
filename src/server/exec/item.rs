@@ -1,7 +1,8 @@
 use crate::{
     exec::{keep_peer, Operations, Peer, Rpc},
-    meta::{Table, TableStatus},
-    peer, store, TIMEOUT,
+    peer,
+    state::{self, Table, TableStatus},
+    TIMEOUT,
 };
 use anyhow::{bail, Context, Result};
 use bytes::Bytes;
@@ -133,10 +134,10 @@ pub struct ItemGet {
 
 impl Rpc for ItemGet {
     type Request = Operations;
-    type Response = Result<Option<Bytes>, store::Error>;
+    type Response = Result<Option<Bytes>, state::StoreError>;
 
     async fn handle(self) -> Result<Self::Response> {
-        Ok(store::item_get(self.table, &self.key).map(|opt| opt.map(Bytes::from)))
+        Ok(state::item_get(self.table, &self.key).map(|opt| opt.map(Bytes::from)))
     }
 }
 
@@ -149,10 +150,10 @@ pub struct ItemSet {
 
 impl Rpc for ItemSet {
     type Request = Operations;
-    type Response = Result<(), store::Error>;
+    type Response = Result<(), state::StoreError>;
 
     async fn handle(self) -> Result<Self::Response> {
-        Ok(store::item_set(self.table, &self.key, &self.value))
+        Ok(state::item_set(self.table, &self.key, &self.value))
     }
 }
 
@@ -163,9 +164,9 @@ pub struct ItemList {
 
 impl Rpc for ItemList {
     type Request = Operations;
-    type Response = Result<Vec<(Vec<u8>, Vec<u8>)>, store::Error>;
+    type Response = Result<Vec<(Vec<u8>, Vec<u8>)>, state::StoreError>;
 
     async fn handle(self) -> Result<Self::Response> {
-        Ok(store::item_list(self.table))
+        Ok(state::item_list(self.table))
     }
 }

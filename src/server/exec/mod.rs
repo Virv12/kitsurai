@@ -10,9 +10,9 @@ use crate::{
         item::{ItemGet, ItemList, ItemSet},
         table::{TableCommit, TableDelete, TablePrepare},
     },
-    meta::{Table, TableData, TableParams, TableStatus},
     peer::Peer,
     rpc::Rpc,
+    state::{Table, TableData, TableParams, TableStatus},
 };
 use derive_more::From;
 use gossip::{GossipFind, GossipSync};

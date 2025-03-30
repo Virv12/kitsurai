@@ -1,19 +1,27 @@
 //! Handles table metadata, exposing methods to load, save and list metadata.
 
+mod store;
+
 use crate::{
-    merkle::Merkle,
+    merkle::{self, Merkle},
     peer::{self, availability_zone, local_index, Peer},
-    store, BANDWIDTH,
 };
 use anyhow::Result;
+use clap::Parser;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     process::exit,
-    sync::{atomic::Ordering, Mutex},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Mutex,
+    },
 };
+use store::KeyValue;
 use uuid::Uuid;
 use xxhash_rust::xxh3::xxh3_64;
+
+pub use store::Error as StoreError;
 
 const META: Uuid = Uuid::new_v8(*b"kitsuraimetadata");
 
@@ -67,6 +75,7 @@ impl TableData {
 
         &peer::peers()[index as usize]
     }
+
     pub fn peers_for_key(&self, key: &[u8]) -> impl Iterator<Item = &'static Peer> + use<'_> {
         let hash = xxh3_64(key);
         let TableParams { b, n, .. } = self.params;
@@ -75,14 +84,14 @@ impl TableData {
     }
 }
 
+static LOCK: Mutex<()> = Mutex::new(());
+static MERKLE: Mutex<Merkle> = Mutex::new(Merkle::new());
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Table {
     pub id: Uuid,
     pub status: TableStatus,
 }
-
-static LOCK: Mutex<()> = Mutex::new(());
-pub static MERKLE: Mutex<Merkle> = Mutex::new(Merkle::new());
 
 impl Table {
     pub fn load(id: Uuid) -> Result<Option<Self>> {
@@ -156,8 +165,28 @@ impl Table {
     }
 }
 
-pub fn init() {
-    log::info!("Initialize meta");
+#[derive(Debug, Parser)]
+pub struct StateCli {
+    /// Configuration for the storage backend component.
+    #[clap(flatten)]
+    store_cli: store::StoreCli,
+
+    /// Available _"bandwidth"_ for this peer.
+    /// See [BANDWIDTH] for more details.
+    #[arg(short, long, default_value = "100")]
+    bandwidth: u64,
+}
+
+pub fn init(cli: StateCli) {
+    // Initialize the store backend.
+    store::init(cli.store_cli);
+
+    log::info!("Initialize state");
+
+    // Set the initial bandwidth as given by configuration.
+    BANDWIDTH.store(cli.bandwidth, Ordering::Relaxed);
+
+    let mut merkle = MERKLE.lock().expect("poisoned merkle lock");
     for mut table in Table::list().expect("could not get table list") {
         match table.status {
             TableStatus::Prepared { .. } => {
@@ -173,12 +202,58 @@ pub fn init() {
                 }
 
                 let data = postcard::to_allocvec(&table.status).unwrap();
-                MERKLE.lock().unwrap().insert(table.id.to_u128_le(), &data);
+                merkle.insert(table.id.to_u128_le(), &data);
             }
             TableStatus::Deleted => {
                 let data = postcard::to_allocvec(&table.status).unwrap();
-                MERKLE.lock().unwrap().insert(table.id.to_u128_le(), &data);
+                merkle.insert(table.id.to_u128_le(), &data);
             }
         }
     }
+}
+
+pub fn item_get(table: Uuid, key: &[u8]) -> Result<Option<Vec<u8>>, store::Error> {
+    store::item_get(table, key)
+}
+
+pub fn item_set(table: Uuid, key: &[u8], value: &[u8]) -> Result<(), store::Error> {
+    store::item_set(table, key, value)
+}
+
+pub fn item_list(table: Uuid) -> Result<Vec<KeyValue>, store::Error> {
+    store::item_list(table)
+}
+
+pub fn merkle_find(path: merkle::Path) -> Option<(merkle::Path, u128)> {
+    MERKLE.lock().expect("poisoned merkle lock").find(path)
+}
+
+/// Holds the current available _"bandwidth"_.
+///
+/// Strictly speaking it has no unit and its value can be set semi-arbitrarily.<br>
+/// In practice the unit chosen is the smallest amount that can be allocated by a table.
+static BANDWIDTH: AtomicU64 = AtomicU64::new(0);
+
+/// Allocates _"bandwidth"_ for a table.
+///
+/// May return less than requested if there is not enough available.
+pub fn bandwidth_alloc(request: u64) -> u64 {
+    let mut available = BANDWIDTH.load(Ordering::Relaxed);
+    loop {
+        let proposed = request.min(available);
+        match BANDWIDTH.compare_exchange(
+            available,
+            available - proposed,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => break proposed,
+            Err(new) => available = new,
+        }
+    }
+}
+
+/// Frees _"bandwidth"_ previously allocated by a table.
+pub fn bandwidth_free(allocated: u64) {
+    BANDWIDTH.fetch_add(allocated, Ordering::Relaxed);
 }

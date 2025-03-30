@@ -4,14 +4,11 @@ use crate::{
         TableStatus,
     },
     peer::{self, availability_zone, local_index},
-    BANDWIDTH, PREPARE_TIME,
+    state, PREPARE_TIME,
 };
 use anyhow::bail;
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::BTreeMap,
-    sync::{atomic::Ordering, Mutex},
-};
+use std::{collections::BTreeMap, sync::Mutex};
 use thiserror::Error;
 use tokio::{
     task::{JoinHandle, JoinSet},
@@ -135,19 +132,7 @@ impl Rpc for TablePrepare {
     async fn handle(self) -> anyhow::Result<Self::Response> {
         async fn inner(rpc: TablePrepare) -> Result<(String, u64), TableError> {
             log::info!("{} prepare", rpc.id);
-            let mut available = BANDWIDTH.load(Ordering::Relaxed);
-            let proposed = loop {
-                let proposed = rpc.request.min(available);
-                match BANDWIDTH.compare_exchange(
-                    available,
-                    available - proposed,
-                    Ordering::Relaxed,
-                    Ordering::Relaxed,
-                ) {
-                    Ok(_) => break proposed,
-                    Err(new) => available = new,
-                }
-            };
+            let proposed = state::bandwidth_alloc(rpc.request);
 
             Table {
                 id: rpc.id,
@@ -207,7 +192,7 @@ impl Rpc for TableCommit {
                 return Err(TooMuchBandwidth);
             }
 
-            BANDWIDTH.fetch_add(pre_bandwidth - post_bandwidth, Ordering::Relaxed);
+            state::bandwidth_free(pre_bandwidth - post_bandwidth);
 
             Table {
                 id: rpc.id,
@@ -249,14 +234,14 @@ impl Rpc for TableDelete {
 
             match old.status {
                 TableStatus::Prepared { allocated } => {
-                    BANDWIDTH.fetch_add(allocated, Ordering::Relaxed);
+                    state::bandwidth_free(allocated);
                 }
                 TableStatus::Created(data) => {
                     if let Some(&allocated) = data
                         .allocation
                         .get(&(availability_zone().to_owned(), local_index() as u64))
                     {
-                        BANDWIDTH.fetch_add(allocated, Ordering::Relaxed);
+                        state::bandwidth_free(allocated);
                     }
                 }
                 TableStatus::Deleted => {}
