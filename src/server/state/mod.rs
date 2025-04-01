@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicI64, Ordering},
         Mutex, RwLock,
     },
 };
@@ -195,7 +195,7 @@ pub fn init(cli: StateCli) {
     log::info!("Initialize state");
 
     // Set the initial bandwidth as given by configuration.
-    BANDWIDTH.store(cli.bandwidth, Ordering::Relaxed);
+    BANDWIDTH.store(cli.bandwidth as i64, Ordering::Relaxed);
 
     let mut merkle = MERKLE.lock().expect("poisoned merkle lock");
     for mut table in Table::list().expect("could not get table list") {
@@ -209,7 +209,7 @@ pub fn init(cli: StateCli) {
                     .allocation
                     .get(&(availability_zone().to_owned(), (local_index() as u64)))
                 {
-                    BANDWIDTH.fetch_sub(allocated, Ordering::Relaxed);
+                    BANDWIDTH.fetch_sub(allocated as i64, Ordering::Relaxed);
                 }
 
                 let data = postcard::to_allocvec(&table.status).unwrap();
@@ -266,28 +266,20 @@ pub fn merkle_find(path: merkle::Path) -> Option<(merkle::Path, u128)> {
 ///
 /// Strictly speaking it has no unit and its value can be set semi-arbitrarily.<br>
 /// In practice the unit chosen is the smallest amount that can be allocated by a table.
-static BANDWIDTH: AtomicU64 = AtomicU64::new(0);
+static BANDWIDTH: AtomicI64 = AtomicI64::new(0);
 
 /// Allocates _"bandwidth"_ for a table.
 ///
 /// May return less than requested if there is not enough available.
 pub fn bandwidth_alloc(request: u64) -> u64 {
-    let mut available = BANDWIDTH.load(Ordering::Relaxed);
-    loop {
-        let proposed = request.min(available);
-        match BANDWIDTH.compare_exchange(
-            available,
-            available - proposed,
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-        ) {
-            Ok(_) => break proposed,
-            Err(new) => available = new,
-        }
-    }
+    let request = request as i64;
+    let available = BANDWIDTH.fetch_sub(request, Ordering::Relaxed);
+    let proposed = available.min(request).max(0);
+    BANDWIDTH.fetch_add(request - proposed, Ordering::Relaxed);
+    proposed as u64
 }
 
 /// Frees _"bandwidth"_ previously allocated by a table.
 pub fn bandwidth_free(allocated: u64) {
-    BANDWIDTH.fetch_add(allocated, Ordering::Relaxed);
+    BANDWIDTH.fetch_add(allocated as i64, Ordering::Relaxed);
 }
