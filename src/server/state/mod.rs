@@ -209,7 +209,12 @@ pub fn init(cli: StateCli) {
                     .allocation
                     .get(&(availability_zone().to_owned(), (local_index() as u64)))
                 {
-                    BANDWIDTH.fetch_sub(allocated as i64, Ordering::Relaxed);
+                    let prev = BANDWIDTH.fetch_sub(allocated as i64, Ordering::Relaxed);
+                    if prev - (allocated as i64) < 0 {
+                        panic!(
+                            "Overflowed bandwidth on initialization. Database may be corrupted?"
+                        );
+                    }
                 }
 
                 let data = postcard::to_allocvec(&table.status).unwrap();
