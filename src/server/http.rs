@@ -43,7 +43,7 @@ pub async fn main<A: ToSocketAddrs>(addr: A, token: CancellationToken) -> Result
 ///
 /// Internal use only.
 async fn table_list() -> (StatusCode, String) {
-    match Table::list() {
+    match Table::list().await {
         Ok(tables) => (
             StatusCode::OK,
             tables

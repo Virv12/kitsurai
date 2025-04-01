@@ -180,7 +180,10 @@ impl Rpc for TableCommit {
     async fn handle(self) -> anyhow::Result<Self::Response> {
         async fn inner(rpc: TableCommit) -> Result<(), TableError> {
             log::info!("{} commit", rpc.id);
-            let table = Table::load(rpc.id).map_err(|_| Store)?.ok_or(NotPrepared)?;
+            let table = Table::load(rpc.id)
+                .await
+                .map_err(|_| Store)?
+                .ok_or(NotPrepared)?;
 
             let TableStatus::Prepared { allocated } = table.status else {
                 return Err(Expired);
@@ -235,7 +238,7 @@ impl Rpc for TableDelete {
 pub async fn table_delete(id: Uuid) -> anyhow::Result<()> {
     log::info!("{} delete", id);
 
-    let table = Table::load(id)?;
+    let table = Table::load(id).await?;
     let Some(table) = table else {
         bail!("Table not found");
     };

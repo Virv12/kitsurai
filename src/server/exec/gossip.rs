@@ -73,7 +73,7 @@ async fn sync(peer: &'static Peer, path: merkle::Path) -> Result<()> {
     } else {
         log::debug!("Syncing {}", path);
         let id = Uuid::from_u128_le(path.id);
-        let table = Table::load(id)?;
+        let table = Table::load(id).await?;
         let table = table.map(|table| table.status);
         let res = GossipSync { id, table }.exec(peer).await?;
         if let Some(table) = res {
@@ -103,7 +103,7 @@ impl Rpc for GossipSync {
             .growing_save()
             .await
         } else {
-            Table::load(self.id)
+            Table::load(self.id).await
         }
         .map(|opt| opt.map(|table| table.status))
     }

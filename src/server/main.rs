@@ -85,6 +85,43 @@ fn logger_init(rpc_addr: String) {
         .init();
 }
 
+async fn metrics(token: CancellationToken) -> Result<()> {
+    //loop {
+    //    tokio::select! {
+    //        _ = token.cancelled() => break,
+    //        _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+    //    }
+    //    let handle = tokio::runtime::Handle::current();
+    //    let metrics = handle.metrics();
+    //    log::info!(
+    //        "alive tasks: {}, queued tasks: {}, asdf: {:?}, park count: {:?}, mean poll time: {:?}",
+    //        metrics.num_alive_tasks(),
+    //        metrics.global_queue_depth(),
+    //        (0..12)
+    //            .map(|i| metrics.worker_local_queue_depth(i))
+    //            .collect::<Vec<_>>(),
+    //        (0..12)
+    //            .map(|i| metrics.worker_park_count(i))
+    //            .collect::<Vec<_>>(),
+    //        (0..12)
+    //            .map(|i| metrics.worker_mean_poll_time(i))
+    //            .collect::<Vec<_>>(),
+    //    );
+    //}
+
+    let handle = tokio::runtime::Handle::current();
+    let runtime_monitor = tokio_metrics::RuntimeMonitor::new(&handle);
+
+    // print runtime metrics every 500ms
+    let frequency = std::time::Duration::from_millis(500);
+    for metrics in runtime_monitor.intervals() {
+        println!("Metrics = {:#?}", metrics);
+        tokio::time::sleep(frequency).await;
+    }
+
+    Ok(())
+}
+
 /// Initializes all modules and starts all servers.
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -110,7 +147,8 @@ async fn main() -> Result<()> {
     let http = http::main(&http_addr, token.clone());
     let rpc = Operations::listener(listener, token.clone());
     let gossip = gossip::gossip(token.clone());
+    let metrics = metrics(token.clone());
     let killer = killer(token);
-    try_join!(http, rpc, gossip, killer)?;
+    try_join!(http, rpc, gossip, metrics, killer)?;
     Ok(())
 }

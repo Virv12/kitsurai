@@ -15,7 +15,7 @@ pub async fn item_get(id: Uuid, key: Bytes) -> Result<Vec<Option<Bytes>>> {
         bail!("table id has invalid version")
     }
 
-    let table = Table::load(id)?.context("table not found")?;
+    let table = Table::load(id).await?.context("table not found")?;
     let TableStatus::Created(table) = table.status else {
         bail!("table is not created")
     };
@@ -62,7 +62,7 @@ pub async fn item_set(id: Uuid, key: Bytes, value: Bytes) -> Result<()> {
         bail!("table id has invalid version")
     }
 
-    let table = Table::load(id)?.context("table not found")?;
+    let table = Table::load(id).await?.context("table not found")?;
     let TableStatus::Created(table) = table.status else {
         bail!("table is not created")
     };
