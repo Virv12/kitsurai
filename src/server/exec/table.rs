@@ -8,15 +8,17 @@ use crate::{
 };
 use anyhow::bail;
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, sync::Mutex};
+use std::{collections::BTreeMap, sync::LazyLock};
 use thiserror::Error;
 use tokio::{
+    sync::Mutex,
     task::{JoinHandle, JoinSet},
     time::sleep,
 };
 use uuid::Uuid;
 
-static PENDING: Mutex<BTreeMap<Uuid, JoinHandle<()>>> = Mutex::new(BTreeMap::new());
+static PENDING: LazyLock<Mutex<BTreeMap<Uuid, JoinHandle<()>>>> =
+    LazyLock::new(|| Mutex::new(BTreeMap::new()));
 
 #[derive(Error, Debug, Serialize, Deserialize)]
 pub enum TableError {
@@ -113,7 +115,8 @@ pub async fn table_create(
             id,
             status: TableStatus::Created(data),
         }
-        .save()?;
+        .save()
+        .await?;
     }
 
     Ok(id)
@@ -141,16 +144,19 @@ impl Rpc for TablePrepare {
                 },
             }
             .save()
+            .await
             .map_err(|_| Store)?;
 
-            PENDING.lock().expect("poisoned lock").insert(
+            PENDING.lock().await.insert(
                 rpc.id,
                 tokio::spawn(async move {
                     sleep(PREPARE_TIME).await;
 
-                    Table::delete_if_prepared(rpc.id).expect("could not delete table");
+                    Table::delete_if_prepared(rpc.id)
+                        .await
+                        .expect("could not delete table");
 
-                    PENDING.lock().expect("poisoned lock").remove(&rpc.id);
+                    PENDING.lock().await.remove(&rpc.id);
                 }),
             );
 
@@ -199,9 +205,10 @@ impl Rpc for TableCommit {
                 status: TableStatus::Created(rpc.table),
             }
             .save()
+            .await
             .map_err(|_| Store)?;
 
-            if let Some(task) = PENDING.lock().expect("poisoned lock").remove(&rpc.id) {
+            if let Some(task) = PENDING.lock().await.remove(&rpc.id) {
                 task.abort();
             }
             Ok(())
@@ -221,7 +228,7 @@ impl Rpc for TableDelete {
     type Response = Result<(), TableError>;
 
     async fn handle(self) -> anyhow::Result<Self::Response> {
-        Ok(Table::delete(self.id).map_err(|_| Store))
+        Ok(Table::delete(self.id).await.map_err(|_| Store))
     }
 }
 
@@ -243,6 +250,6 @@ pub async fn table_delete(id: Uuid) -> anyhow::Result<()> {
     }
     set.join_all().await;
 
-    Table::delete(id)?;
+    Table::delete(id).await?;
     Ok(())
 }

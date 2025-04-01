@@ -137,7 +137,9 @@ impl Rpc for ItemGet {
     type Response = Result<Option<Bytes>, state::Error>;
 
     async fn handle(self) -> Result<Self::Response> {
-        Ok(state::item_get(self.table, &self.key).map(|opt| opt.map(Bytes::from)))
+        Ok(state::item_get(self.table, &self.key)
+            .await
+            .map(|opt| opt.map(Bytes::from)))
     }
 }
 
@@ -153,7 +155,7 @@ impl Rpc for ItemSet {
     type Response = Result<(), state::Error>;
 
     async fn handle(self) -> Result<Self::Response> {
-        Ok(state::item_set(self.table, &self.key, &self.value))
+        Ok(state::item_set(self.table, &self.key, &self.value).await)
     }
 }
 
@@ -167,6 +169,6 @@ impl Rpc for ItemList {
     type Response = Result<Vec<(Vec<u8>, Vec<u8>)>, state::Error>;
 
     async fn handle(self) -> Result<Self::Response> {
-        Ok(state::item_list(self.table))
+        Ok(state::item_list(self.table).await)
     }
 }

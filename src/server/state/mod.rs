@@ -9,14 +9,13 @@ use crate::{
 use anyhow::Result;
 use clap::Parser;
 use serde::{Deserialize, Serialize};
+use std::sync::LazyLock;
 use std::{
     collections::BTreeMap,
-    sync::{
-        atomic::{AtomicI64, Ordering},
-        Mutex, RwLock,
-    },
+    sync::atomic::{AtomicI64, Ordering},
 };
 use store::KeyValue;
+use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 use xxhash_rust::xxh3::xxh3_64;
 
@@ -81,8 +80,8 @@ impl TableData {
     }
 }
 
-static LOCK: RwLock<()> = RwLock::new(());
-static MERKLE: Mutex<Merkle> = Mutex::new(Merkle::new());
+static LOCK: LazyLock<RwLock<()>> = LazyLock::new(|| RwLock::new(()));
+static MERKLE: LazyLock<Mutex<Merkle>> = LazyLock::new(|| Mutex::new(Merkle::new()));
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Table {
@@ -101,15 +100,12 @@ impl Table {
         Ok(table)
     }
 
-    fn save_inner(&self) -> Result<Option<Table>> {
+    async fn save_inner(&self) -> Result<Option<Table>> {
         let old = Table::load(self.id)?;
         let blob = postcard::to_allocvec(&self.status)?;
         store::item_set(META, self.id.as_bytes(), &blob)?;
         if !matches!(self.status, TableStatus::Prepared { .. }) {
-            MERKLE
-                .lock()
-                .expect("poisoned merkle lock")
-                .insert(self.id.to_u128_le(), &blob);
+            MERKLE.lock().await.insert(self.id.to_u128_le(), &blob);
         }
         Ok(old)
     }
@@ -127,37 +123,37 @@ impl Table {
         Ok(tables)
     }
 
-    pub fn save(&self) -> Result<Option<Table>> {
+    pub async fn save(&self) -> Result<Option<Table>> {
         log::debug!("{} save", self.id);
-        let _guard = LOCK.write().expect("poisoned lock");
-        self.save_inner()
+        let _guard = LOCK.write().await;
+        self.save_inner().await
     }
 
-    pub fn growing_save(&self) -> Result<Option<Table>> {
+    pub async fn growing_save(&self) -> Result<Option<Table>> {
         log::debug!("{} checked_save", self.id);
-        let _guard = LOCK.write().expect("poisoned lock");
+        let _guard = LOCK.write().await;
         let old = Table::load(self.id)?;
         if old.as_ref().map_or(0, |o| o.status.age()) >= self.status.age() {
             return Ok(old);
         }
-        self.save_inner()
+        self.save_inner().await
     }
 
-    pub fn delete_if_prepared(id: Uuid) -> Result<()> {
+    pub async fn delete_if_prepared(id: Uuid) -> Result<()> {
         log::debug!("{id} delete_if_prepared");
-        let _guard = LOCK.write().expect("poisoned lock");
+        let _guard = LOCK.write().await;
         let mut table = Table::load(id).ok().flatten().expect("table should exists");
         if let TableStatus::Prepared { allocated } = table.status {
             table.status = TableStatus::Deleted;
-            table.save_inner()?;
+            table.save_inner().await?;
             bandwidth_free(allocated);
         }
         Ok(())
     }
 
-    pub fn delete(id: Uuid) -> Result<()> {
+    pub async fn delete(id: Uuid) -> Result<()> {
         log::debug!("{id} delete");
-        let _guard = LOCK.write().expect("poisoned lock");
+        let _guard = LOCK.write().await;
         let mut table = Table::load(id).ok().flatten().expect("table should exists");
         let allocated = match table.status {
             TableStatus::Prepared { allocated } => allocated,
@@ -169,7 +165,7 @@ impl Table {
             _ => 0,
         };
         table.status = TableStatus::Deleted;
-        table.save_inner()?;
+        table.save_inner().await?;
         bandwidth_free(allocated);
         store::table_delete(id)?;
         Ok(())
@@ -188,7 +184,7 @@ pub struct StateCli {
     bandwidth: u64,
 }
 
-pub fn init(cli: StateCli) {
+pub async fn init(cli: StateCli) {
     // Initialize the store backend.
     store::init(cli.store_cli);
 
@@ -197,12 +193,12 @@ pub fn init(cli: StateCli) {
     // Set the initial bandwidth as given by configuration.
     BANDWIDTH.store(cli.bandwidth as i64, Ordering::Relaxed);
 
-    let mut merkle = MERKLE.lock().expect("poisoned merkle lock");
+    let mut merkle = MERKLE.lock().await;
     for mut table in Table::list().expect("could not get table list") {
         match table.status {
             TableStatus::Prepared { .. } => {
                 table.status = TableStatus::Deleted;
-                table.save().expect("failed to prepared table");
+                table.save().await.expect("failed to prepared table");
             }
             TableStatus::Created(ref data) => {
                 if let Some(&allocated) = data
@@ -236,8 +232,8 @@ pub enum Error {
     Store(#[from] store::Error),
 }
 
-pub fn item_get(table_id: Uuid, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
-    let _guard = LOCK.read().expect("poisoned lock");
+pub async fn item_get(table_id: Uuid, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
+    let _guard = LOCK.read().await;
     let table = Table::load(table_id).unwrap();
     if !table.is_some_and(|t| matches!(t.status, TableStatus::Created(_))) {
         return Err(Error::TableNotFound);
@@ -245,8 +241,8 @@ pub fn item_get(table_id: Uuid, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
     Ok(store::item_get(table_id, key)?)
 }
 
-pub fn item_set(table_id: Uuid, key: &[u8], value: &[u8]) -> Result<(), Error> {
-    let _guard = LOCK.read().expect("poisoned lock");
+pub async fn item_set(table_id: Uuid, key: &[u8], value: &[u8]) -> Result<(), Error> {
+    let _guard = LOCK.read().await;
     let table = Table::load(table_id).unwrap();
     if !table.is_some_and(|t| matches!(t.status, TableStatus::Created(_))) {
         return Err(Error::TableNotFound);
@@ -254,8 +250,8 @@ pub fn item_set(table_id: Uuid, key: &[u8], value: &[u8]) -> Result<(), Error> {
     Ok(store::item_set(table_id, key, value)?)
 }
 
-pub fn item_list(table_id: Uuid) -> Result<Vec<KeyValue>, Error> {
-    let _guard = LOCK.read().expect("poisoned lock");
+pub async fn item_list(table_id: Uuid) -> Result<Vec<KeyValue>, Error> {
+    let _guard = LOCK.read().await;
     let table = Table::load(table_id).unwrap();
     if !table.is_some_and(|t| matches!(t.status, TableStatus::Created(_))) {
         return Err(Error::TableNotFound);
@@ -263,8 +259,8 @@ pub fn item_list(table_id: Uuid) -> Result<Vec<KeyValue>, Error> {
     Ok(store::item_list(table_id)?)
 }
 
-pub fn merkle_find(path: merkle::Path) -> Option<(merkle::Path, u128)> {
-    MERKLE.lock().expect("poisoned merkle lock").find(path)
+pub async fn merkle_find(path: merkle::Path) -> Option<(merkle::Path, u128)> {
+    MERKLE.lock().await.find(path)
 }
 
 /// Holds the current available _"bandwidth"_.

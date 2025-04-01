@@ -18,7 +18,7 @@ pub async fn gossip(token: CancellationToken) -> Result<()> {
         tokio::select! {
             _ = token.cancelled() => break,
             _ = sleep(Duration::from_secs(1)) => {}
-        };
+        }
 
         let peers = peer::peers();
         let mut rng = rand::rng();
@@ -37,7 +37,7 @@ pub async fn gossip(token: CancellationToken) -> Result<()> {
 async fn check_sync(peer: &'static Peer, path: merkle::Path) -> Result<()> {
     log::debug!("Gossiping with {} at {}", peer.addr, path);
 
-    let local_node = state::merkle_find(path);
+    let local_node = state::merkle_find(path).await;
     let remote_node = GossipFind { path }.exec(peer).await?;
 
     match (local_node, remote_node) {
@@ -77,7 +77,7 @@ async fn sync(peer: &'static Peer, path: merkle::Path) -> Result<()> {
         let table = table.map(|table| table.status);
         let res = GossipSync { id, table }.exec(peer).await?;
         if let Some(table) = res {
-            Table { id, status: table }.growing_save()?;
+            Table { id, status: table }.growing_save().await?;
         }
     }
 
@@ -101,6 +101,7 @@ impl Rpc for GossipSync {
                 status: table,
             }
             .growing_save()
+            .await
         } else {
             Table::load(self.id)
         }
@@ -118,6 +119,6 @@ impl Rpc for GossipFind {
     type Response = Option<(merkle::Path, u128)>;
 
     async fn handle(self) -> Result<Self::Response> {
-        Ok(state::merkle_find(self.path))
+        Ok(state::merkle_find(self.path).await)
     }
 }

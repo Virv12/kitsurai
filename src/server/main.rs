@@ -103,7 +103,7 @@ async fn main() -> Result<()> {
     // Initialize the static peer list, given our rpc address.
     peer::init(peer_cli, listener.local_addr()?);
     // Initialize the table metadata and gossip structures.
-    state::init(state_cli);
+    state::init(state_cli).await;
 
     // Start the HTTP server and RPC server.
     let token = CancellationToken::new();
