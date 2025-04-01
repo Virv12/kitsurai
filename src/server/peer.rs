@@ -2,7 +2,6 @@
 //! Also handles this peer availability zone.
 
 use clap::Parser;
-use rand::Rng;
 use std::{
     convert::Infallible,
     net::{IpAddr, SocketAddr, ToSocketAddrs},
@@ -103,10 +102,9 @@ pub fn init(cli: PeerCli, local_addr: SocketAddr) {
         .set(local_index)
         .expect("local index already initialized");
 
-    let zone = match (cli.availability_zone, &cli.discovery) {
-        (Some(zone), _) => zone,
-        (None, Discovery::Dns(_)) => rand::rng().random_range(1..=3).to_string(),
-        (None, _) => Uuid::new_v4().to_string(),
+    let zone = match cli.availability_zone {
+        Some(zone) => zone,
+        None => Uuid::new_v4().to_string(),
     };
 
     AVAILABILITY_ZONE
