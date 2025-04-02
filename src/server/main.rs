@@ -8,9 +8,13 @@ mod state;
 use crate::exec::{gossip, Operations};
 use anyhow::Result;
 use clap::{arg, Parser};
+use serde::Serialize;
+use std::fs::File;
 use std::{io::Write, time::Duration};
 use tokio::{net::TcpListener, signal::unix::SignalKind, try_join};
+use tokio_metrics::RuntimeMetrics;
 use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
 /// Time that an RPC may take to complete.
 ///
@@ -109,14 +113,106 @@ async fn metrics(token: CancellationToken) -> Result<()> {
     //    );
     //}
 
+    #[derive(Serialize)]
+    struct NewRuntimeMetrics {
+        workers_count: usize,
+        total_park_count: u64,
+        max_park_count: u64,
+        min_park_count: u64,
+        mean_poll_duration: u128,
+        mean_poll_duration_worker_min: u128,
+        mean_poll_duration_worker_max: u128,
+        poll_time_histogram: String,
+        total_noop_count: u64,
+        max_noop_count: u64,
+        min_noop_count: u64,
+        total_steal_count: u64,
+        max_steal_count: u64,
+        min_steal_count: u64,
+        total_steal_operations: u64,
+        max_steal_operations: u64,
+        min_steal_operations: u64,
+        num_remote_schedules: u64,
+        total_local_schedule_count: u64,
+        max_local_schedule_count: u64,
+        min_local_schedule_count: u64,
+        total_overflow_count: u64,
+        max_overflow_count: u64,
+        min_overflow_count: u64,
+        total_polls_count: u64,
+        max_polls_count: u64,
+        min_polls_count: u64,
+        total_busy_duration: u128,
+        max_busy_duration: u128,
+        min_busy_duration: u128,
+        global_queue_depth: usize,
+        total_local_queue_depth: usize,
+        max_local_queue_depth: usize,
+        min_local_queue_depth: usize,
+        elapsed: u128,
+        budget_forced_yield_count: u64,
+        io_driver_ready_count: u64,
+    }
+
+    impl From<RuntimeMetrics> for NewRuntimeMetrics {
+        fn from(metrics: RuntimeMetrics) -> Self {
+            Self {
+                workers_count: metrics.workers_count,
+                total_park_count: metrics.total_park_count,
+                max_park_count: metrics.max_park_count,
+                min_park_count: metrics.min_park_count,
+                mean_poll_duration: metrics.mean_poll_duration.as_micros(),
+                mean_poll_duration_worker_min: metrics.mean_poll_duration_worker_min.as_micros(),
+                mean_poll_duration_worker_max: metrics.mean_poll_duration_worker_max.as_micros(),
+                poll_time_histogram: "N/A".to_string(),
+                total_noop_count: metrics.total_noop_count,
+                max_noop_count: metrics.max_noop_count,
+                min_noop_count: metrics.min_noop_count,
+                total_steal_count: metrics.total_steal_count,
+                max_steal_count: metrics.max_steal_count,
+                min_steal_count: metrics.min_steal_count,
+                total_steal_operations: metrics.total_steal_operations,
+                max_steal_operations: metrics.max_steal_operations,
+                min_steal_operations: metrics.min_steal_operations,
+                num_remote_schedules: metrics.num_remote_schedules,
+                total_local_schedule_count: metrics.total_local_schedule_count,
+                max_local_schedule_count: metrics.max_local_schedule_count,
+                min_local_schedule_count: metrics.min_local_schedule_count,
+                total_overflow_count: metrics.total_overflow_count,
+                max_overflow_count: metrics.max_overflow_count,
+                min_overflow_count: metrics.min_overflow_count,
+                total_polls_count: metrics.total_polls_count,
+                max_polls_count: metrics.max_polls_count,
+                min_polls_count: metrics.min_polls_count,
+                total_busy_duration: metrics.total_busy_duration.as_micros(),
+                max_busy_duration: metrics.max_busy_duration.as_micros(),
+                min_busy_duration: metrics.min_busy_duration.as_micros(),
+                global_queue_depth: metrics.global_queue_depth,
+                total_local_queue_depth: metrics.total_local_queue_depth,
+                max_local_queue_depth: metrics.max_local_queue_depth,
+                min_local_queue_depth: metrics.min_local_queue_depth,
+                elapsed: metrics.elapsed.as_micros(),
+                budget_forced_yield_count: metrics.budget_forced_yield_count,
+                io_driver_ready_count: metrics.io_driver_ready_count,
+            }
+        }
+    }
+
     let handle = tokio::runtime::Handle::current();
     let runtime_monitor = tokio_metrics::RuntimeMonitor::new(&handle);
 
     // print runtime metrics every 500ms
-    let frequency = std::time::Duration::from_millis(500);
+    let frequency = Duration::from_millis(500);
+    let path = format!("shared/{}.csv", Uuid::new_v4());
+    log::info!("This instance will log metrics to {path}");
+    let mut writer = csv::Writer::from_writer(File::create_new(path)?);
     for metrics in runtime_monitor.intervals() {
-        println!("Metrics = {:#?}", metrics);
+        writer.serialize(NewRuntimeMetrics::from(metrics))?;
+        writer.flush()?;
         tokio::time::sleep(frequency).await;
+        if token.is_cancelled() {
+            break;
+        }
     }
 
     Ok(())
