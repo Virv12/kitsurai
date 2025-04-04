@@ -17,4 +17,6 @@ jobs:
       run: cargo clippy --all-features --all-targets -- -D warnings
     - name: cargo test
       run: RUST_BACKTRACE=1 cargo test --all-features --all-targets --no-fail-fast
+    - name: cargo doc
+      run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --document-private-items
 

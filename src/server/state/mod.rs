@@ -54,6 +54,7 @@ pub struct TableData {
 }
 
 impl TableData {
+    /// Return the peer on position `virt` on the hash ring.
     fn virt_to_peer(&self, virt: u64) -> &'static Peer {
         let TableParams { b, n, .. } = self.params;
         let ord = virt / n + virt % n * b;
@@ -72,6 +73,7 @@ impl TableData {
         &peer::peers()[index as usize]
     }
 
+    /// Return an iterator over the peers that are responsible for the given key.
     pub fn peers_for_key(&self, key: &[u8]) -> impl Iterator<Item = &'static Peer> + use<'_> {
         let hash = xxh3_64(key);
         let TableParams { b, n, .. } = self.params;

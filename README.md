@@ -72,7 +72,7 @@ Each node is assigned to `b_i` positions starting from the last assigned and tak
 If the slot is already taken by another node, we skip it and take it's successor.
 
 The construction of such ring can be expensive because the allocated bandwidth can be very large.
-The whole construction can be avoided by using a formula to find which node is assigned to a position in the ring
+The whole construction can be avoided by using a formula to find which node is assigned to a given position in the ring
 (see [virt_to_peer](https://virv12.github.io/kitsurai/ktd/state/struct.TableData.html#method.virt_to_peer)).
 
 To read a key each of the `n` nodes is queried and the responses are aggregated.

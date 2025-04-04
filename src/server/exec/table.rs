@@ -32,6 +32,9 @@ pub enum TableError {
     TooMuchBandwidth,
 }
 
+/// Allocates a table with the given parameters and returns its ID.
+/// When this function returns the table will be ready to use from this node,
+/// but not necessarily from all nodes.
 pub async fn table_create(
     params @ TableParams { mut b, n, r, w }: TableParams,
 ) -> anyhow::Result<Uuid> {

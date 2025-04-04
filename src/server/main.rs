@@ -20,7 +20,7 @@ use tokio_util::sync::CancellationToken;
 /// Defaults to 1 second.
 const TIMEOUT: Duration = Duration::from_secs(1);
 
-/// Time that a stored table can remain in the [Prepared](meta::TableStatus::Prepared) state.
+/// Time that a stored table can remain in the [Prepared](state::TableStatus::Prepared) state.
 ///
 /// If it is not commited or deleted explicitly before this timer runs out
 ///  the table will be automatically deleted.
