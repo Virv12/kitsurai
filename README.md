@@ -32,9 +32,9 @@ Each table has four parameters:
 Every node knows all the tables and their parameters.
 
 To create a table the following happens:
-- The client connect to a node, which we will call the router, and specifies the table parameters.
+- The client connects to a node, which we will call the router, and specifies the table parameters.
 - The router generates a uuid for the table.
-- The router list the nodes and ask them to reserve some bandwidth for the table.
+- The router lists the nodes and asks them to reserve some bandwidth for the table.
 - Once the router has enough bandwidth reserved it defines a list of nodes responsible for storing the table.
 - The router asks the nodes to commit the table.
 - The router returns success and the table uuid to the client.
@@ -50,7 +50,7 @@ To delete a table it's enough to mark it as deleted on one node.
 
 ### Gossip
 
-Every node each second starts gossipping with a random node in the cluster.
+Each node initiates a gossip exchange with a random node every second.
 With the help of a merkle tree, the nodes quickly find which tables are missing or have been deleted,
 then they exchange the tables and their parameters.
 
@@ -61,7 +61,7 @@ respecting the ratios of allocated bandwidth between the nodes.
 
 To do so, we first call `b_i` the bandwidth of node `i` and `Σ` the total allocated bandwidth.
 We define a ring of size `Σ` and for each position in the ring we assign a node `i` such that:
-- every `n`-window in the ring contains distinct nodes.
+- every `n`-long window in the ring contains distinct nodes.
 - Every node `i` is assigned to `b_i` positions in the ring.
 
 Given a key we compute it's hash and find the position in the ring.
@@ -69,7 +69,7 @@ The key is assigned to the `n` nodes to the right of the key's position in the r
 
 Nodes are assigned to the ring iteratively, starting from the first node.
 Each node is assigned to `b_i` positions starting from the last assigned and taking a slot every `n`-th position.
-If the slot is already taken by another node, we skip it and take it's successor.
+If the slot is already taken by another node, we skip it and take its successor.
 
 The construction of such ring can be expensive because the allocated bandwidth can be very large.
 The whole construction can be avoided by using a formula to find which node is assigned to a given position in the ring
