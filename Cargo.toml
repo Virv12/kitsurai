@@ -14,6 +14,10 @@ path = "src/server/main.rs"
 name = "ktc"
 path = "src/client/main.rs"
 
+[[bin]]
+name = "ktb"
+path = "src/bench/main.rs"
+
 [dependencies]
 anyhow = { version = "1.0.97", features = ["std", "backtrace"] }
 axum = "0.8.1"
