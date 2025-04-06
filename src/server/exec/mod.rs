@@ -24,10 +24,12 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
+/// Await the task (usually some RPC) and keep its peer to aid debugging.
 async fn keep_peer<O>(peer: &Peer, task: impl Future<Output = O>) -> (&Peer, O) {
     (peer, task.await)
 }
 
+/// All known RPCs.
 #[derive(Debug, Serialize, Deserialize, From)]
 pub enum Operations {
     ItemGet(ItemGet),
@@ -41,6 +43,7 @@ pub enum Operations {
 }
 
 impl Operations {
+    /// Returns the RPC name for debugging purposes.
     fn name(&self) -> &'static str {
         match self {
             Operations::ItemGet(_) => "item-get",
@@ -54,6 +57,9 @@ impl Operations {
         }
     }
 
+    /// Runs the RPC listener.
+    ///
+    /// Waits for incoming requests, deserializes them and executes the appropriate action.
     pub async fn listener(listener: TcpListener, token: CancellationToken) -> anyhow::Result<()> {
         async fn recv(mut stream: TcpStream) -> anyhow::Result<()> {
             let mut buffer = Vec::new();

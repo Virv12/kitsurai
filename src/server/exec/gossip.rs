@@ -13,6 +13,8 @@ use tokio::{task::JoinHandle, time::sleep};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+/// Runs the gossip tasks with a random peer
+///  with a delay of 1 second between executions.
 pub async fn gossip(token: CancellationToken) -> Result<()> {
     loop {
         tokio::select! {
@@ -34,6 +36,9 @@ pub async fn gossip(token: CancellationToken) -> Result<()> {
     Ok(())
 }
 
+/// Checks if this node is in sync for the given path with the given peer.
+///
+/// Syncs whenever a difference is detected.
 async fn check_sync(peer: &'static Peer, path: merkle::Path) -> Result<()> {
     log::debug!("Gossiping with {} at {}", peer.addr, path);
 
@@ -60,6 +65,8 @@ async fn check_sync(peer: &'static Peer, path: merkle::Path) -> Result<()> {
     }
 }
 
+/// Recursively finds the different table
+///  or, if found, sends the table metadata to the other peer.
 async fn sync(peer: &'static Peer, path: merkle::Path) -> Result<()> {
     fn spawn(peer: &'static Peer, path: merkle::Path) -> JoinHandle<Result<()>> {
         tokio::spawn(check_sync(peer, path))

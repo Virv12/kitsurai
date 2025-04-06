@@ -10,6 +10,9 @@ use serde::{Deserialize, Serialize};
 use tokio::{task::JoinSet, time::timeout};
 use uuid::Uuid;
 
+/// Retrieve a key from the given table.
+///
+/// Executes [ItemGet] on `N` nodes and returns after `R` successful responses.
 pub async fn item_get(id: Uuid, key: Bytes) -> Result<Vec<Option<Bytes>>> {
     if id.get_version().context("invalid table id")? != uuid::Version::SortRand {
         bail!("table id has invalid version")
@@ -57,6 +60,9 @@ pub async fn item_get(id: Uuid, key: Bytes) -> Result<Vec<Option<Bytes>>> {
     Ok(results)
 }
 
+/// Sets a key in the given table.
+///
+/// Executes [ItemSet] on `N` nodes and returns after `W` successful responses.
 pub async fn item_set(id: Uuid, key: Bytes, value: Bytes) -> Result<()> {
     if id.get_version().context("invalid table id")? != uuid::Version::SortRand {
         bail!("table id has invalid version")
@@ -104,6 +110,10 @@ pub async fn item_set(id: Uuid, key: Bytes, value: Bytes) -> Result<()> {
     )
 }
 
+/// Lists all key-value pairs for a given table for every node.
+///
+/// Returns a list of (address, key-value list).
+/// Executes [ItemList].
 pub async fn item_list(table: Uuid) -> Result<Vec<(String, Vec<(Vec<u8>, Vec<u8>)>)>> {
     let mut set = JoinSet::new();
     for peer in peer::peers() {

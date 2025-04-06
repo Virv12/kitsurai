@@ -14,9 +14,13 @@ use tokio::{
 };
 use uuid::Uuid;
 
+/// The global list of handles to tables in the prepared state, _pending_ creation.
+///
+/// Will be used to cancel the deletion tasks whenever the creation is successful.
 static PENDING: LazyLock<Mutex<BTreeMap<Uuid, JoinHandle<()>>>> =
     LazyLock::new(|| Mutex::new(BTreeMap::new()));
 
+/// All table errors.
 #[derive(Error, Debug, Serialize, Deserialize)]
 pub enum TableError {
     #[error("could not store table: {0}")]
@@ -30,8 +34,9 @@ pub enum TableError {
 }
 
 /// Allocates a table with the given parameters and returns its ID.
+///
 /// When this function returns the table will be ready to use from this node,
-/// but not necessarily from all nodes.
+///  but not necessarily from all nodes.
 pub async fn table_create(
     params @ TableParams { mut b, n, r, w }: TableParams,
 ) -> anyhow::Result<Uuid> {
@@ -131,6 +136,9 @@ pub async fn table_create(
     Ok(id)
 }
 
+/// The preparation RPC.
+///
+/// Used to request available bandwidth from a node.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TablePrepare {
     id: Uuid,
@@ -141,6 +149,12 @@ impl Rpc for TablePrepare {
     type Request = Operations;
     type Response = Result<(String, u64), TableError>;
 
+    /// The preparation RPC's main body.
+    ///
+    /// Computes available bandwidth and stores the prepared table.
+    /// Launches the deletion tasks to execute after [PREPARE_TIME].
+    ///
+    /// Returns this peer availability zone and proposed bandwidth for this table.
     async fn handle(self) -> anyhow::Result<Self::Response> {
         async fn inner(rpc: TablePrepare) -> Result<(String, u64), TableError> {
             log::info!("{} prepare", rpc.id);
@@ -176,6 +190,9 @@ impl Rpc for TablePrepare {
     }
 }
 
+/// The commit RPC.
+///
+/// Used to commit proposed bandwidth and create a table.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TableCommit {
     id: Uuid,
@@ -186,6 +203,9 @@ impl Rpc for TableCommit {
     type Request = Operations;
     type Response = Result<(), TableError>;
 
+    /// The commit RPC's main body.
+    ///
+    /// Stores the table if it is compatible with what was proposed earlier.
     async fn handle(self) -> anyhow::Result<Self::Response> {
         async fn inner(rpc: TableCommit) -> Result<(), TableError> {
             log::info!("{} commit", rpc.id);
@@ -229,28 +249,21 @@ impl Rpc for TableCommit {
     }
 }
 
+/// The table delete RPC.
+///
+/// Used to delete a table after some error occurs.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TableDelete {
     id: Uuid,
 }
 
-impl Rpc for TableDelete {
-    type Request = Operations;
-    type Response = Result<(), TableError>;
-
-    async fn handle(self) -> anyhow::Result<Self::Response> {
-        Ok(Table::delete(self.id)
-            .await
-            .map_err(|e| Store(e.to_string())))
-    }
-}
-
+/// Deletes the given table.
 pub async fn table_delete(id: Uuid) -> anyhow::Result<()> {
     log::info!("{} delete", id);
 
     let table = Table::load(id)?;
     let Some(table) = table else {
-        bail!("Table not found");
+        bail!("table not found");
     };
     let TableStatus::Created(data) = table.status else {
         bail!("Invalid table");
@@ -261,8 +274,23 @@ pub async fn table_delete(id: Uuid) -> anyhow::Result<()> {
         let rpc = TableDelete { id };
         set.spawn(rpc.exec(&peer::peers()[peer_id as usize]));
     }
+    // TODO: we don't really care here.
     set.join_all().await;
 
     Table::delete(id).await?;
     Ok(())
+}
+
+impl Rpc for TableDelete {
+    type Request = Operations;
+    type Response = Result<(), TableError>;
+
+    /// The delete RPC's main body.
+    ///
+    /// See [Table::delete] for more.
+    async fn handle(self) -> anyhow::Result<Self::Response> {
+        Ok(Table::delete(self.id)
+            .await
+            .map_err(|e| Store(e.to_string())))
+    }
 }

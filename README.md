@@ -112,6 +112,17 @@ To allocate each table's key in `n` AZs the previous allocation algorithm requir
 - the router shall not take more than `b / n` bandwidth from nodes in a single AZ;
 - nodes should be assigned in the ring ordered by their AZ.
 
+### Remote Procedure Calls
+
+Remote procedures are executed with the following protocol:
+1. A opens a TCP connection to B;
+2. A sends the serialized RPC request;
+3. A closes its TCP stream (sending `FIN` to B);
+4. B waits until it has received all the available data;
+5. B deserializes and executes the RPC;
+6. B sends the RPC's response back and closes the connection;
+7. A waits until it has received all of the response and returns the value to the callee.
+
 ## Future Features and Limitations
 The current implementation does not provide any method to:
 - resolve read conflicts;
