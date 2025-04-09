@@ -96,12 +96,17 @@ async fn bench(
 
 async fn test(name: &str, client: Client, req: Request) {
     let mut out = File::create(format!("bench-{name}.csv")).unwrap();
-    //let mut out = BufWriter::new(out);
     writeln!(
         out,
         "period,count,bad_count,avg,mdev,p0,p50,p90,p99,p999,p100"
     )
     .unwrap();
+
+    for _ in 0..30 {
+        exec_req(client.clone(), req.try_clone().unwrap())
+            .await
+            .unwrap();
+    }
 
     let mut period_us = 1000;
     loop {

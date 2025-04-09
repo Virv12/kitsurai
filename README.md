@@ -41,7 +41,7 @@ To create a table the following happens:
 1. the client sends the table parameters;
 2. the router generates an uuid for the table and computes the actual bandwidth `B = b * n` to account for replication;
 3. the router asks the other nodes for available bandwidth to allocate on the new table, 
-    while being careful to not allocate more than `B / n` on a single node, 
+    while being careful to not allocate more than `b` on a single node, 
     guaranteeing that the table will be actually replicated `n` times;
 4. once the router has enough bandwidth (`>= B`)
     reserved it defines the list of nodes responsible for storing the table and their effective quota;
@@ -75,7 +75,7 @@ Each node initiates a gossip exchange with a random node every second.
 With the help of a merkle tree, nodes can quickly find which tables are different
 and exchange tables status and parameters.
 
-if the chosen node is offline then ...TODO?
+If the chosen node is offline then it will fail and the node will try again the next second.
 
 ### Key-Value Pairs
 
@@ -109,7 +109,7 @@ The first `r` (or `w`) responses available are returned to the client.
 To guarantee the database's availability each node can be tagged with a string, 
  identifying its availability zone, AZ from now.
 To allocate each table's key in `n` AZs the previous allocation algorithm requires only a slight change:
-- the router shall not take more than `b / n` bandwidth from nodes in a single AZ;
+- the router shall not take more than `b` bandwidth from nodes in a single AZ;
 - nodes should be assigned in the ring ordered by their AZ.
 
 ### Remote Procedure Calls
@@ -152,4 +152,8 @@ It should be possible to add both of these features
 
 ## Benchmarks
 
-TODO!
+The benchmarks are run on three instances on the same machine using the `bench.sh` script.
+Below are the results on a log/log scale for the "item get" operation and the "item set" operation.
+
+![](./benchmarks/bench-get.svg)
+![](./benchmarks/bench-set.svg)
