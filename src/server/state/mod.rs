@@ -92,9 +92,9 @@ pub struct Table {
 }
 
 impl Table {
-    pub fn load(id: Uuid) -> Result<Option<Self>> {
+    pub async fn load(id: Uuid) -> Result<Option<Self>> {
         log::debug!("{id} load");
-        let blob = store::item_get(META, id.as_bytes())?;
+        let blob = store::item_get(META, id.as_bytes()).await?;
         let table = blob.map(|blob| Self {
             id,
             status: postcard::from_bytes(blob.as_ref()).expect("table deserialization failed"),
@@ -103,18 +103,19 @@ impl Table {
     }
 
     async fn save_inner(&self) -> Result<Option<Table>> {
-        let old = Table::load(self.id)?;
+        let old = Table::load(self.id).await?;
         let blob = postcard::to_allocvec(&self.status)?;
-        store::item_set(META, self.id.as_bytes(), &blob)?;
+        store::item_set(META, self.id.as_bytes(), &blob).await?;
         if !matches!(self.status, TableStatus::Prepared { .. }) {
             MERKLE.lock().await.insert(self.id.to_u128_le(), &blob);
         }
         Ok(old)
     }
 
-    pub fn list() -> Result<Vec<Self>> {
+    pub async fn list() -> Result<Vec<Self>> {
         log::debug!("list");
-        let tables = store::item_list(META)?
+        let tables = store::item_list(META)
+            .await?
             .into_iter()
             .map(|(key, value)| Self {
                 id: Uuid::from_slice(&key).expect("id deserialization failed"),
@@ -134,7 +135,7 @@ impl Table {
     pub async fn growing_save(&self) -> Result<Option<Table>> {
         log::debug!("{} checked_save", self.id);
         let _guard = LOCK.write().await;
-        let old = Table::load(self.id)?;
+        let old = Table::load(self.id).await?;
         if old.as_ref().map_or(0, |o| o.status.age()) >= self.status.age() {
             return Ok(old);
         }
@@ -144,7 +145,11 @@ impl Table {
     pub async fn delete_if_prepared(id: Uuid) -> Result<()> {
         log::debug!("{id} delete_if_prepared");
         let _guard = LOCK.write().await;
-        let mut table = Table::load(id).ok().flatten().expect("table should exists");
+        let mut table = Table::load(id)
+            .await
+            .ok()
+            .flatten()
+            .expect("table should exists");
         if let TableStatus::Prepared { allocated } = table.status {
             table.status = TableStatus::Deleted;
             table.save_inner().await?;
@@ -156,7 +161,11 @@ impl Table {
     pub async fn delete(id: Uuid) -> Result<()> {
         log::debug!("{id} delete");
         let _guard = LOCK.write().await;
-        let mut table = Table::load(id).ok().flatten().expect("table should exists");
+        let mut table = Table::load(id)
+            .await
+            .ok()
+            .flatten()
+            .expect("table should exists");
         let allocated = match table.status {
             TableStatus::Prepared { allocated } => allocated,
             TableStatus::Created(ref data) => data
@@ -169,7 +178,7 @@ impl Table {
         table.status = TableStatus::Deleted;
         table.save_inner().await?;
         bandwidth_free(allocated);
-        store::table_delete(id)?;
+        store::table_delete(id).await?;
         Ok(())
     }
 }
@@ -196,7 +205,7 @@ pub async fn init(cli: StateCli) {
     BANDWIDTH.store(cli.bandwidth as i64, Ordering::Relaxed);
 
     let mut merkle = MERKLE.lock().await;
-    for mut table in Table::list().expect("could not get table list") {
+    for mut table in Table::list().await.expect("could not get table list") {
         match table.status {
             TableStatus::Prepared { .. } => {
                 table.status = TableStatus::Deleted;
@@ -236,29 +245,29 @@ pub enum Error {
 
 pub async fn item_get(table_id: Uuid, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
     let _guard = LOCK.read().await;
-    let table = Table::load(table_id).unwrap();
+    let table = Table::load(table_id).await.unwrap();
     if !table.is_some_and(|t| matches!(t.status, TableStatus::Created(_))) {
         return Err(Error::TableNotFound);
     }
-    Ok(store::item_get(table_id, key)?)
+    Ok(store::item_get(table_id, key).await?)
 }
 
 pub async fn item_set(table_id: Uuid, key: &[u8], value: &[u8]) -> Result<(), Error> {
     let _guard = LOCK.read().await;
-    let table = Table::load(table_id).unwrap();
+    let table = Table::load(table_id).await.unwrap();
     if !table.is_some_and(|t| matches!(t.status, TableStatus::Created(_))) {
         return Err(Error::TableNotFound);
     }
-    Ok(store::item_set(table_id, key, value)?)
+    Ok(store::item_set(table_id, key, value).await?)
 }
 
 pub async fn item_list(table_id: Uuid) -> Result<Vec<KeyValue>, Error> {
     let _guard = LOCK.read().await;
-    let table = Table::load(table_id).unwrap();
+    let table = Table::load(table_id).await.unwrap();
     if !table.is_some_and(|t| matches!(t.status, TableStatus::Created(_))) {
         return Err(Error::TableNotFound);
     }
-    Ok(store::item_list(table_id)?)
+    Ok(store::item_list(table_id).await?)
 }
 
 pub async fn merkle_find(path: merkle::Path) -> Option<(merkle::Path, u128)> {

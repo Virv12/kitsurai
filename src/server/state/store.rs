@@ -2,9 +2,14 @@
 //!  also supports listing keys in a table.
 
 use clap::Parser;
-use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
-use std::{path::PathBuf, sync::OnceLock};
+use std::{
+    ffi::OsStr,
+    os::unix::ffi::{OsStrExt, OsStringExt},
+    path::PathBuf,
+    sync::OnceLock,
+};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use uuid::Uuid;
 
 /// Where the `sqlite` database should be stored.
@@ -18,95 +23,108 @@ pub struct StoreCli {
     store_path: PathBuf,
 }
 
-thread_local! {
-    /// This threads sqlite connection.
-    ///
-    /// TODO: Every thread has its own connection to allow request parallelization?
-    static SQLITE: rusqlite::Connection = {
-        let path = STORE_PATH.get().expect("Store path uninitialized");
-        rusqlite::Connection::open(path).expect("Failed to open SQLite database")
-    };
-}
-
 /// Initializes the storage global state as specified in the configuration.
 ///
 /// Creates the sqlite table if it does not exist.
 pub fn init(cli: StoreCli) {
     log::info!("Initialize store at {}", cli.store_path.display());
+    std::fs::create_dir_all(cli.store_path.join("tmp")).expect("Failed to create store directory");
     STORE_PATH
         .set(cli.store_path)
         .expect("Store path already initialized");
-    SQLITE.with(|conn| {
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS store (
-                tbl BLOB,
-                key BLOB,
-                value BLOB,
-                PRIMARY KEY (tbl, key)
-            )",
-            [],
-        )
-        .expect("Failed to create table");
-    });
 }
 
 /// Errors that can be returned by this module's methods.
 #[derive(thiserror::Error, Serialize, Deserialize, Debug, Clone)]
 pub enum Error {}
 
-pub fn item_get(table: Uuid, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
+pub async fn item_get(table: Uuid, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
     log::debug!("{table} get");
-    SQLITE.with(|conn| {
-        Ok(conn
-            .query_row(
-                "SELECT value FROM store WHERE (tbl, key) = (?, ?)",
-                (table.as_bytes(), key),
-                |row| row.get(0),
-            )
-            .optional()
-            .unwrap())
-    })
+    let path = STORE_PATH
+        .get()
+        .expect("Store path not initialized")
+        .join(table.to_string())
+        .join(OsStr::from_bytes(key));
+    let mut file = match tokio::fs::File::open(path).await {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(None);
+        }
+        Err(e) => {
+            panic!("Error opening file: {e}");
+        }
+    };
+    let mut content = Vec::new();
+    file.read_to_end(&mut content)
+        .await
+        .expect("Failed to read file");
+    Ok(Some(content))
 }
 
-pub fn item_set(table: Uuid, key: &[u8], value: &[u8]) -> Result<(), Error> {
+pub async fn item_set(table: Uuid, key: &[u8], value: &[u8]) -> Result<(), Error> {
     log::debug!("{table} set");
-    SQLITE.with(|conn| {
-        conn.execute(
-            "INSERT OR REPLACE INTO store (tbl, key, value) VALUES (?, ?, ?)",
-            (table.as_bytes(), key, value),
-        )
-        .unwrap();
-    });
+    let tmp_path = STORE_PATH
+        .get()
+        .expect("Store path not initialized")
+        .join("tmp")
+        .join(Uuid::now_v7().to_string());
+    let mut file = tokio::fs::File::create(&tmp_path)
+        .await
+        .expect("Failed to create file");
+    file.write_all(value)
+        .await
+        .expect("Failed to write to file");
+    file.sync_all().await.expect("Failed to sync file");
+    let path = STORE_PATH
+        .get()
+        .expect("Store path not initialized")
+        .join(table.to_string());
+    std::fs::create_dir_all(&path).expect("Failed to create table directory");
+    let path = path.join(OsStr::from_bytes(key));
+    tokio::fs::rename(tmp_path, path)
+        .await
+        .expect("Failed to rename temporary file");
     Ok(())
 }
 
 pub type KeyValue = (Vec<u8>, Vec<u8>);
 
-pub fn item_list(table: Uuid) -> Result<Vec<KeyValue>, Error> {
+pub async fn item_list(table: Uuid) -> Result<Vec<KeyValue>, Error> {
     log::debug!("{table} list");
-    SQLITE.with(|conn| {
-        let mut stmt = conn
-            .prepare("SELECT key, value FROM store where tbl = ?")
-            .expect("Failed to prepare statement");
-
-        let rows = stmt
-            .query_map([table.as_bytes()], |row| {
-                Ok((
-                    row.get::<_, Vec<u8>>(0).unwrap(),
-                    row.get::<_, Vec<u8>>(1).unwrap(),
-                ))
-            })
-            .unwrap();
-
-        Ok(rows.map(Result::unwrap).collect())
-    })
+    let path = STORE_PATH
+        .get()
+        .expect("Store path not initialized")
+        .join(table.to_string());
+    let mut items = Vec::new();
+    let mut iter = match tokio::fs::read_dir(path).await {
+        Ok(iter) => iter,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(items);
+        }
+        Err(e) => {
+            panic!("Error reading directory: {e}");
+        }
+    };
+    while let Some(entry) = iter
+        .next_entry()
+        .await
+        .expect("Failed to read directory entry")
+    {
+        let key = entry.file_name().into_vec();
+        let value = item_get(table, &key).await?.expect("Item should exist");
+        items.push((key, value));
+    }
+    Ok(items)
 }
 
-pub fn table_delete(table: Uuid) -> Result<(), Error> {
+pub async fn table_delete(table: Uuid) -> Result<(), Error> {
     log::debug!("{table} destroy");
-    SQLITE.with(|conn| {
-        conn.execute("DELETE FROM store WHERE tbl = ?", [table.as_bytes()])
-            .unwrap();
-    });
+    let path = STORE_PATH
+        .get()
+        .expect("Store path not initialized")
+        .join(table.to_string());
+    tokio::fs::remove_dir_all(path)
+        .await
+        .expect("Failed to delete table directory");
     Ok(())
 }

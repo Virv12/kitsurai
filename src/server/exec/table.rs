@@ -210,6 +210,7 @@ impl Rpc for TableCommit {
         async fn inner(rpc: TableCommit) -> Result<(), TableError> {
             log::info!("{} commit", rpc.id);
             let table = Table::load(rpc.id)
+                .await
                 .map_err(|e| Store(e.to_string()))?
                 .ok_or(NotPrepared)?;
 
@@ -261,7 +262,7 @@ pub struct TableDelete {
 pub async fn table_delete(id: Uuid) -> anyhow::Result<()> {
     log::info!("{id} delete");
 
-    let table = Table::load(id)?;
+    let table = Table::load(id).await?;
     let Some(table) = table else {
         bail!("table not found");
     };

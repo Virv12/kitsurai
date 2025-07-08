@@ -18,7 +18,7 @@ use tokio_util::sync::CancellationToken;
 ///  will be counted as a failure.
 ///
 /// Defaults to 1 second.
-const TIMEOUT: Duration = Duration::from_secs(1);
+const TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Time that a stored table can remain in the [Prepared](state::TableStatus::Prepared) state.
 ///
