@@ -111,7 +111,7 @@ pub async fn table_create(
         set.spawn(rpc.exec(peer));
     }
     let results = set.join_all().await;
-    log::debug!("commit results {:?}", results);
+    log::debug!("commit results {results:?}");
     if results.iter().flatten().any(Result::is_err) {
         for (_, index) in data.allocation.keys() {
             let rpc = TableDelete { id };
@@ -259,7 +259,7 @@ pub struct TableDelete {
 
 /// Deletes the given table.
 pub async fn table_delete(id: Uuid) -> anyhow::Result<()> {
-    log::info!("{} delete", id);
+    log::info!("{id} delete");
 
     let table = Table::load(id)?;
     let Some(table) = table else {

@@ -78,7 +78,7 @@ async fn sync(peer: &'static Peer, path: merkle::Path) -> Result<()> {
         left.await??;
         right.await??;
     } else {
-        log::debug!("Syncing {}", path);
+        log::debug!("Syncing {path}");
         let id = Uuid::from_u128_le(path.id);
         let table = Table::load(id)?;
         let table = table.map(|table| table.status);

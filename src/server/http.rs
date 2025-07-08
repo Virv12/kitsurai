@@ -164,16 +164,16 @@ async fn item_list(Path(table): Path<Uuid>) -> (StatusCode, Vec<u8>) {
 
         let mut out = Vec::new();
         for (peer, _) in &data {
-            write!(out, "${}", peer)?;
+            write!(out, "${peer}")?;
         }
         writeln!(out)?;
 
         for key in keys {
-            write!(out, "{:?}", key)?;
+            write!(out, "{key:?}")?;
             for (_, keyvalue) in &data {
                 write!(out, "$")?;
                 if let Some(value) = keyvalue.get(&key) {
-                    write!(out, "{:?}", value)?;
+                    write!(out, "{value:?}")?;
                 }
             }
             writeln!(out)?;

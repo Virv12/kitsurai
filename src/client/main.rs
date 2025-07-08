@@ -114,10 +114,10 @@ async fn main() -> anyhow::Result<()> {
             if res.status().is_success() {
                 let bytes = res.bytes().await?;
                 let (header, rest) = postcard::take_from_bytes::<Header>(&bytes)?;
-                println!("{}", header);
+                println!("{header}");
                 for value in header.extract(bytes.slice(bytes.len() - rest.len()..)) {
                     if value.len() <= limit {
-                        println!("{:?}", value);
+                        println!("{value:?}");
                     } else {
                         println!("{:?}...", value.slice(..limit));
                     }
