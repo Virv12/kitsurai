@@ -68,7 +68,7 @@ pub async fn item_set(table: Uuid, key: &[u8], value: &[u8]) -> Result<(), Error
         .expect("Store path not initialized")
         .join("tmp")
         .join(Uuid::now_v7().to_string());
-    let mut file = tokio::fs::File::create(&tmp_path)
+    let mut file = tokio::fs::File::create_new(&tmp_path)
         .await
         .expect("Failed to create file");
     file.write_all(value)
@@ -123,8 +123,13 @@ pub async fn table_delete(table: Uuid) -> Result<(), Error> {
         .get()
         .expect("Store path not initialized")
         .join(table.to_string());
-    tokio::fs::remove_dir_all(path)
-        .await
-        .expect("Failed to delete table directory");
+    match tokio::fs::remove_dir_all(path).await {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            panic!("Error deleting table directory: {e}");
+        }
+    }
+
     Ok(())
 }
