@@ -4,6 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use clap::{Parser, Subcommand};
 use reqwest::{Client, Request};
 use tokio::task::JoinSet;
 
@@ -11,9 +12,13 @@ type Res = Result<f64, ()>;
 
 async fn exec_req(client: Client, req: Request) -> Res {
     let start_time = Instant::now();
-    let res = client.execute(req).await.map_err(|_| ())?;
+    let res = client.execute(req).await.map_err(|e| {
+        eprintln!("Request failed: {e:?}");
+    })?;
     let status = res.status();
-    let _body = res.bytes().await.map_err(|_| ())?;
+    let _body = res.bytes().await.map_err(|e| {
+        eprintln!("Failed to read response body: {e}");
+    })?;
     let end_time = Instant::now();
     if !status.is_success() {
         return Err(());
@@ -21,10 +26,43 @@ async fn exec_req(client: Client, req: Request) -> Res {
     Ok(end_time.duration_since(start_time).as_secs_f64() * 1000.)
 }
 
+async fn run_fstress(client: Client, reqs: &[Request], period_us: u64) {
+    let mut set = JoinSet::new();
+    let period = Duration::from_micros(period_us);
+    let mut interval = tokio::time::interval(period);
+
+    for i in 0.. {
+        while set.try_join_next().is_some() {}
+
+        let req = reqs[i % reqs.len()].try_clone().unwrap();
+        interval.tick().await;
+        set.spawn(exec_req(client.clone(), req));
+    }
+
+    set.join_all().await;
+}
+
+async fn run_lstress(client: Client, reqs: &[Request], tasks: u64) {
+    let mut set = JoinSet::new();
+
+    for req in reqs.iter().cycle().take(tasks as usize) {
+        let req = req.try_clone().unwrap();
+        let client = client.clone();
+        set.spawn(async move {
+            loop {
+                let req = req.try_clone().unwrap();
+                let _ = exec_req(client.clone(), req).await;
+            }
+        });
+    }
+
+    set.join_all().await;
+}
+
 async fn bench(
     name: &str,
     client: Client,
-    req: Request,
+    reqs: &[Request],
     period: Duration,
     time: Duration,
     out: &mut dyn Write,
@@ -48,12 +86,15 @@ async fn bench(
             }
         }
 
+        interval.tick().await;
+        set.spawn(exec_req(
+            client.clone(),
+            reqs[idx % reqs.len()].try_clone().unwrap(),
+        ));
+
         if (idx + 1).count_ones() == 1 {
             eprintln!("[{}] {} / {} / {}", name, res.len(), idx + 1, count_req);
         }
-
-        interval.tick().await;
-        set.spawn(exec_req(client.clone(), req.try_clone().unwrap()));
     }
 
     while let Some(r) = set.join_next().await {
@@ -94,7 +135,7 @@ async fn bench(
     true
 }
 
-async fn test(name: &str, client: Client, req: Request) {
+async fn test(name: &str, client: Client, reqs: &[Request]) {
     let mut out = File::create(format!("bench-{name}.csv")).unwrap();
     writeln!(
         out,
@@ -102,7 +143,7 @@ async fn test(name: &str, client: Client, req: Request) {
     )
     .unwrap();
 
-    for _ in 0..30 {
+    for req in reqs {
         exec_req(client.clone(), req.try_clone().unwrap())
             .await
             .unwrap();
@@ -114,7 +155,7 @@ async fn test(name: &str, client: Client, req: Request) {
         let good = bench(
             &format!("{name}-{:.3}ms", period_us as f64 / 1000.),
             client.clone(),
-            req.try_clone().unwrap(),
+            reqs,
             period,
             Duration::from_secs(20),
             &mut out,
@@ -128,31 +169,80 @@ async fn test(name: &str, client: Client, req: Request) {
     }
 }
 
+#[derive(Parser)]
+struct Args {
+    #[clap(short, long, default_value = "localhost:8000")]
+    server: String,
+
+    #[clap(long)]
+    freq_stress: Option<u64>,
+
+    #[clap(long)]
+    lat_stress: Option<u64>,
+
+    table: String,
+    key: String,
+
+    #[clap(subcommand)]
+    action: Action,
+}
+
+#[derive(Subcommand)]
+enum Action {
+    Get,
+    Set,
+}
+
 #[tokio::main]
 async fn main() {
-    let table = std::env::args().nth(1).unwrap();
-    let key = std::env::args().nth(2).unwrap();
+    let Args {
+        server,
+        freq_stress,
+        lat_stress,
+        table,
+        key,
+        action,
+    } = Args::parse();
 
     let client = Client::new();
 
-    test(
-        "get",
-        client.clone(),
-        client
-            .get(format!("http://localhost:8000/{table}/{key}"))
-            .build()
-            .unwrap(),
-    )
-    .await;
+    let reqs: Vec<_> = match action {
+        Action::Get => (0..100)
+            .map(|i| {
+                client
+                    .get(format!("http://{server}/{table}/{key}-{i}"))
+                    .build()
+                    .unwrap()
+            })
+            .collect(),
+        Action::Set => (0..100)
+            .map(|i| {
+                client
+                    .post(format!("http://{server}/{table}/{key}-{i}"))
+                    .body("value")
+                    .build()
+                    .unwrap()
+            })
+            .collect(),
+    };
 
-    test(
-        "set",
-        client.clone(),
-        client
-            .post(format!("http://localhost:8000/{table}/{key}"))
-            .body("value-1")
-            .build()
-            .unwrap(),
-    )
-    .await;
+    match (freq_stress, lat_stress) {
+        (Some(freq), None) => {
+            run_fstress(client.clone(), &reqs, freq).await;
+        }
+        (None, Some(lat)) => {
+            run_lstress(client.clone(), &reqs, lat).await;
+        }
+        (None, None) => {
+            let name = match action {
+                Action::Get => "get",
+                Action::Set => "set",
+            };
+            test(name, client.clone(), &reqs).await;
+        }
+        _ => {
+            eprintln!("Please specify either --freq-stress or --lat-stress, not both.");
+            return;
+        }
+    }
 }

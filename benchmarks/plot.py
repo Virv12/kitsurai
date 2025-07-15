@@ -53,13 +53,13 @@ def main(file: Path):
     #fig.tight_layout()
 
     # set title
-    ax.set_title(file.stem.split('-')[1].title())
+    #ax.set_title(file.stem.split('-')[1].title())
 
     ax.set_xscale('log')
     ax.set_yscale('log')
 
-    ax.set_xlabel('Request Frequency (Hz)')
-    ax.set_ylabel('Response Latency (ms)')
+    ax.set_xlabel('Frequenza delle richieste [Hz]')
+    ax.set_ylabel('Latenza delle risposte [ms]')
 
     ax.plot(freqs, p0s, label='$P_0$')
     ax.plot(freqs, p50s, label='$P_{50}$')
@@ -74,10 +74,10 @@ def main(file: Path):
     ax.grid(which='minor', linestyle=':', linewidth=0.3)
 
     #fig.show()
-    fig.savefig(file.with_suffix(f'.svg'))
+    #fig.savefig(file.with_suffix(f'.svg'))
     fig.savefig(file.with_suffix(f'.pdf'))
 
 
 if __name__ == "__main__":
-    main(Path(__file__).parent / 'bench-get.csv')
-    main(Path(__file__).parent / 'bench-set.csv')
+    for file in Path(__file__).parent.glob('*.csv'):
+        main(file)

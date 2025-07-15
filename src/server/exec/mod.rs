@@ -11,16 +11,17 @@ use crate::{
         table::{TableCommit, TableDelete, TablePrepare},
     },
     peer::Peer,
-    rpc::Rpc,
     state::{Table, TableData, TableParams, TableStatus},
 };
+use anyhow::Result;
 use derive_more::From;
 use gossip::{GossipFind, GossipSync};
-use serde::{Deserialize, Serialize};
-use std::future::Future;
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use std::{collections::HashMap, future::Future, sync::LazyLock};
 use tokio::{
-    io::AsyncReadExt,
+    io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
+    sync::Mutex,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -42,6 +43,9 @@ pub enum Operations {
     GossipFind(GossipFind),
 }
 
+static CONN_CACHE: LazyLock<Mutex<HashMap<String, Vec<TcpStream>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
 impl Operations {
     /// Returns the RPC name for debugging purposes.
     fn name(&self) -> &'static str {
@@ -62,20 +66,25 @@ impl Operations {
     /// Waits for incoming requests, deserializes them and executes the appropriate action.
     pub async fn listener(listener: TcpListener, token: CancellationToken) -> anyhow::Result<()> {
         async fn recv(mut stream: TcpStream) -> anyhow::Result<()> {
-            let mut buffer = Vec::new();
-            stream.read_to_end(&mut buffer).await?;
-            let variant: Operations = postcard::from_bytes(&buffer)?;
-            log::debug!("Request from {}: {}", stream.peer_addr()?, variant.name());
+            loop {
+                let mut len_buffer = [0u8; 8];
+                stream.read_exact(&mut len_buffer).await?;
+                let len = u64::from_le_bytes(len_buffer) as usize;
+                let mut buffer = vec![0u8; len];
+                stream.read_exact(&mut buffer).await?;
+                let variant: Operations = postcard::from_bytes(&buffer)?;
+                log::debug!("Request from {}: {}", stream.peer_addr()?, variant.name());
 
-            match variant {
-                Operations::ItemGet(get) => get.remote(stream).await,
-                Operations::ItemSet(set) => set.remote(stream).await,
-                Operations::ItemList(list) => list.remote(stream).await,
-                Operations::TablePrepare(prepare) => prepare.remote(stream).await,
-                Operations::TableCommit(commit) => commit.remote(stream).await,
-                Operations::TableDelete(delete) => delete.remote(stream).await,
-                Operations::GossipSync(sync) => sync.remote(stream).await,
-                Operations::GossipFind(find) => find.remote(stream).await,
+                match variant {
+                    Operations::ItemGet(get) => get.remote(&mut stream).await?,
+                    Operations::ItemSet(set) => set.remote(&mut stream).await?,
+                    Operations::ItemList(list) => list.remote(&mut stream).await?,
+                    Operations::TablePrepare(prepare) => prepare.remote(&mut stream).await?,
+                    Operations::TableCommit(commit) => commit.remote(&mut stream).await?,
+                    Operations::TableDelete(delete) => delete.remote(&mut stream).await?,
+                    Operations::GossipSync(sync) => sync.remote(&mut stream).await?,
+                    Operations::GossipFind(find) => find.remote(&mut stream).await?,
+                }
             }
         }
 
@@ -94,6 +103,71 @@ impl Operations {
             });
         }
 
+        Ok(())
+    }
+}
+
+async fn get_conn(peer: &str) -> Result<TcpStream> {
+    let cached = CONN_CACHE
+        .lock()
+        .await
+        .entry(peer.to_string())
+        .or_insert_with(Vec::new)
+        .pop();
+    match cached {
+        Some(stream) => Ok(stream),
+        None => Ok(TcpStream::connect(peer).await?),
+    }
+}
+
+async fn put_conn(peer: &str, stream: TcpStream) {
+    CONN_CACHE
+        .lock()
+        .await
+        .entry(peer.to_string())
+        .or_insert_with(Vec::new)
+        .push(stream);
+}
+
+pub trait Rpc: Serialize + DeserializeOwned {
+    type Request: Serialize + DeserializeOwned + From<Self>;
+    type Response: Serialize + DeserializeOwned;
+
+    async fn handle(self) -> Result<Self::Response>;
+
+    async fn exec(self, peer: &Peer) -> Result<Self::Response> {
+        if peer.is_local() {
+            self.handle().await
+        } else {
+            let mut stream = get_conn(&peer.addr).await?;
+            let req: Self::Request = self.into();
+            let bytes = postcard::to_allocvec(&req)?;
+            stream
+                .write_all(&(bytes.len() as u64).to_le_bytes())
+                .await?;
+            stream.write_all(&bytes).await?;
+
+            // Read remote response.
+            let mut len_buffer = [0u8; 8];
+            stream.read_exact(&mut len_buffer).await?;
+            let len = u64::from_le_bytes(len_buffer) as usize;
+            let mut buffer = vec![0u8; len];
+            stream.read_exact(&mut buffer).await?;
+            put_conn(&peer.addr, stream).await;
+            let parsed = postcard::from_bytes(&buffer)?;
+            Ok(parsed)
+        }
+    }
+
+    async fn remote(self, stream: &mut TcpStream) -> Result<()> {
+        let result = self.handle().await?;
+
+        // Send result.
+        let bytes = postcard::to_allocvec(&result)?;
+        stream
+            .write_all(&(bytes.len() as u64).to_le_bytes())
+            .await?;
+        stream.write_all(&bytes).await?;
         Ok(())
     }
 }

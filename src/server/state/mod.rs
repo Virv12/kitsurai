@@ -24,7 +24,7 @@ use xxhash_rust::xxh3::xxh3_64;
 
 const META: Uuid = Uuid::new_v8(*b"kitsuraimetadata");
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TableStatus {
     Prepared { allocated: u64 },
@@ -90,8 +90,14 @@ static MERKLE: LazyLock<Mutex<Merkle>> = LazyLock::new(|| Mutex::new(Merkle::new
 static SCHED_BASE_TIME: LazyLock<Instant> = LazyLock::new(Instant::now);
 static SCHED_AVAIL_AT: LazyLock<RwLock<HashMap<Uuid, AtomicU64>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
+static TABLE_CACHE: LazyLock<Mutex<Table>> = LazyLock::new(|| {
+    Mutex::new(Table {
+        id: Uuid::nil(),
+        status: TableStatus::Deleted,
+    })
+});
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Table {
     pub id: Uuid,
     pub status: TableStatus,
@@ -100,16 +106,30 @@ pub struct Table {
 impl Table {
     pub async fn load(id: Uuid) -> Result<Option<Self>> {
         log::debug!("{id} load");
+        {
+            let cache = TABLE_CACHE.lock().await;
+            if cache.id == id {
+                return Ok(Some(cache.clone()));
+            }
+        }
         let blob = store::item_get(META, id.as_bytes()).await?;
         let table = blob.map(|blob| Self {
             id,
             status: postcard::from_bytes(blob.as_ref()).expect("table deserialization failed"),
         });
+        {
+            if let Some(table) = &table {
+                *TABLE_CACHE.lock().await = table.clone();
+            }
+        }
         Ok(table)
     }
 
     async fn save_inner(&self) -> Result<Option<Table>> {
         let old = Table::load(self.id).await?;
+        {
+            *TABLE_CACHE.lock().await = self.clone();
+        }
         let blob = postcard::to_allocvec(&self.status)?;
         store::item_set(META, self.id.as_bytes(), &blob).await?;
         match &self.status {

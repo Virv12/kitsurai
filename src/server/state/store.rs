@@ -3,12 +3,7 @@
 
 use clap::Parser;
 use serde::{Deserialize, Serialize};
-use std::{
-    ffi::OsStr,
-    os::unix::ffi::{OsStrExt, OsStringExt},
-    path::PathBuf,
-    sync::OnceLock,
-};
+use std::{os::unix::ffi::OsStringExt, path::PathBuf, sync::OnceLock};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use uuid::Uuid;
 
@@ -44,7 +39,7 @@ pub async fn item_get(table: Uuid, key: &[u8]) -> Result<Option<Vec<u8>>, Error>
         .get()
         .expect("Store path not initialized")
         .join(table.to_string())
-        .join(OsStr::from_bytes(key));
+        .join(hex::encode(key));
     let mut file = match tokio::fs::File::open(path).await {
         Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -80,7 +75,7 @@ pub async fn item_set(table: Uuid, key: &[u8], value: &[u8]) -> Result<(), Error
         .expect("Store path not initialized")
         .join(table.to_string());
     std::fs::create_dir_all(&path).expect("Failed to create table directory");
-    let path = path.join(OsStr::from_bytes(key));
+    let path = path.join(hex::encode(key));
     tokio::fs::rename(tmp_path, path)
         .await
         .expect("Failed to rename temporary file");
@@ -110,7 +105,7 @@ pub async fn item_list(table: Uuid) -> Result<Vec<KeyValue>, Error> {
         .await
         .expect("Failed to read directory entry")
     {
-        let key = entry.file_name().into_vec();
+        let key = hex::decode(entry.file_name().into_vec()).unwrap();
         let value = item_get(table, &key).await?.expect("Item should exist");
         items.push((key, value));
     }

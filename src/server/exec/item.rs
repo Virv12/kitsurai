@@ -23,7 +23,7 @@ pub async fn item_get(id: Uuid, key: Bytes) -> Result<Vec<Option<Bytes>>> {
         bail!("table is not created")
     };
 
-    let mut set = Box::new(JoinSet::new());
+    let mut set = JoinSet::new();
     for peer in table.peers_for_key(&key) {
         let rpc = ItemGet {
             table: id,

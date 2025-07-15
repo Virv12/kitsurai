@@ -7,7 +7,7 @@ PEERS=localhost:3000,localhost:3001,localhost:3002
 
 cargo build --release --bins
 
-ulimit -n 10000
+ulimit -n 100000
 
 TMP=$(mktemp -d)
 for PEER in ${PEERS//,/ }; do
@@ -17,12 +17,15 @@ for PEER in ${PEERS//,/ }; do
         --store-path "$TMP"/store$PORT.db \
         --http-addr localhost:$(( 5000 + $PORT )) \
         --rpc-addr $PEER \
+        --bandwidth 100000 \
         --peers $PEERS &
 done
 
 sleep 1
 
-TABLE=$(./target/release/ktc table create 20 1 1 1 | awk '{ print $3 }')
-./target/release/ktc item $TABLE set key-1 value-1 >/dev/null
+TABLE=$(./target/release/ktc table create 100000 1 1 1 | awk '{ print $3 }')
+for i in {0..99}; do
+    ./target/release/ktc item $TABLE set key-$i value >/dev/null
+done
 
-./target/release/ktb $TABLE "key-1"
+./target/release/ktb $TABLE "key"
