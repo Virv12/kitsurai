@@ -95,6 +95,7 @@ impl Operations {
             };
 
             let (socket, peer) = result?;
+            socket.set_nodelay(true)?;
             tokio::spawn(async move {
                 match recv(socket).await {
                     Ok(_) => {}
@@ -116,7 +117,11 @@ async fn get_conn(peer: &str) -> Result<TcpStream> {
         .pop();
     match cached {
         Some(stream) => Ok(stream),
-        None => Ok(TcpStream::connect(peer).await?),
+        None => {
+            let stream = TcpStream::connect(peer).await?;
+            stream.set_nodelay(true)?;
+            Ok(stream)
+        }
     }
 }
 
