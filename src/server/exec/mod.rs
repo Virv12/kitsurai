@@ -14,12 +14,16 @@ use crate::{
     state::{Table, TableData, TableParams, TableStatus},
 };
 use anyhow::Result;
+use bytes::Bytes;
 use derive_more::From;
 use gossip::{GossipFind, GossipSync};
+use http::{Request, Response};
+use http_body_util::{BodyExt, Full};
+use hyper::{client::conn::http2::SendRequest, server::conn::http2, service::service_fn};
+use hyper_util::rt::{TokioExecutor, TokioIo};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use std::{collections::HashMap, future::Future, sync::LazyLock};
+use std::{collections::{hash_map::Entry, HashMap}, future::Future, sync::LazyLock};
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     sync::Mutex,
 };
@@ -43,7 +47,7 @@ pub enum Operations {
     GossipFind(GossipFind),
 }
 
-static CONN_CACHE: LazyLock<Mutex<HashMap<String, Vec<TcpStream>>>> =
+static CONN_CACHE: LazyLock<Mutex<HashMap<String, SendRequest<Full<Bytes>>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 impl Operations {
@@ -65,27 +69,28 @@ impl Operations {
     ///
     /// Waits for incoming requests, deserializes them and executes the appropriate action.
     pub async fn listener(listener: TcpListener, token: CancellationToken) -> anyhow::Result<()> {
-        async fn recv(mut stream: TcpStream) -> anyhow::Result<()> {
-            loop {
-                let mut len_buffer = [0u8; 8];
-                stream.read_exact(&mut len_buffer).await?;
-                let len = u64::from_le_bytes(len_buffer) as usize;
-                let mut buffer = vec![0u8; len];
-                stream.read_exact(&mut buffer).await?;
-                let variant: Operations = postcard::from_bytes(&buffer)?;
-                log::debug!("Request from {}: {}", stream.peer_addr()?, variant.name());
+        async fn recv(
+            req: Request<hyper::body::Incoming>,
+        ) -> anyhow::Result<Response<Full<Bytes>>> {
+            let body = req.into_body();
+            let data = body.collect().await?.to_bytes();
+            let variant: Operations = postcard::from_bytes(&data)?;
+            // log::debug!("Request from {}: {}", stream.peer_addr()?, variant.name());
 
-                match variant {
-                    Operations::ItemGet(get) => get.remote(&mut stream).await?,
-                    Operations::ItemSet(set) => set.remote(&mut stream).await?,
-                    Operations::ItemList(list) => list.remote(&mut stream).await?,
-                    Operations::TablePrepare(prepare) => prepare.remote(&mut stream).await?,
-                    Operations::TableCommit(commit) => commit.remote(&mut stream).await?,
-                    Operations::TableDelete(delete) => delete.remote(&mut stream).await?,
-                    Operations::GossipSync(sync) => sync.remote(&mut stream).await?,
-                    Operations::GossipFind(find) => find.remote(&mut stream).await?,
-                }
-            }
+            let res = match variant {
+                Operations::ItemGet(get) => get.remote().await?,
+                Operations::ItemSet(set) => set.remote().await?,
+                Operations::ItemList(list) => list.remote().await?,
+                Operations::TablePrepare(prepare) => prepare.remote().await?,
+                Operations::TableCommit(commit) => commit.remote().await?,
+                Operations::TableDelete(delete) => delete.remote().await?,
+                Operations::GossipSync(sync) => sync.remote().await?,
+                Operations::GossipFind(find) => find.remote().await?,
+            };
+            let res = Response::builder()
+                .status(200)
+                .body(Full::from(Bytes::from(res)))?;
+            Ok(res)
         }
 
         loop {
@@ -93,14 +98,17 @@ impl Operations {
                 _ = token.cancelled() => break,
                 result = listener.accept() => result,
             };
+            let (stream, _peer) = result?;
+            stream.set_nodelay(true)?;
+            let io = TokioIo::new(stream);
 
-            let (socket, peer) = result?;
-            socket.set_nodelay(true)?;
             tokio::spawn(async move {
-                match recv(socket).await {
-                    Ok(_) => {}
-                    Err(error) => log::error!("failed to handle request from {peer}: {error}"),
-                };
+                if let Err(err) = http2::Builder::new(TokioExecutor::new())
+                    .serve_connection(io, service_fn(recv))
+                    .await
+                {
+                    eprintln!("Error serving connection: {:?}", err);
+                }
             });
         }
 
@@ -108,30 +116,29 @@ impl Operations {
     }
 }
 
-async fn get_conn(peer: &str) -> Result<TcpStream> {
-    let cached = CONN_CACHE
-        .lock()
-        .await
-        .entry(peer.to_string())
-        .or_insert_with(Vec::new)
-        .pop();
-    match cached {
-        Some(stream) => Ok(stream),
-        None => {
+async fn get_conn(peer: &str) -> Result<SendRequest<Full<Bytes>>> {
+    let mut cache = CONN_CACHE.lock().await;
+    match cache.entry(peer.to_string()) {
+        Entry::Occupied(e) => Ok(e.get().clone()),
+        Entry::Vacant(e) => {
             let stream = TcpStream::connect(peer).await?;
-            stream.set_nodelay(true)?;
-            Ok(stream)
+            let io = TokioIo::new(stream);
+
+            // Perform an HTTP/2 handshake over the TCP connection
+            let (sender, connection) =
+                hyper::client::conn::http2::handshake(TokioExecutor::new(), io).await?;
+
+            // Spawn the connection driver (handles incoming frames)
+            tokio::spawn(async move {
+                if let Err(err) = connection.await {
+                    eprintln!("Connection error: {:?}", err);
+                }
+            });
+
+            e.insert(sender.clone());
+            Ok(sender)
         }
     }
-}
-
-async fn put_conn(peer: &str, stream: TcpStream) {
-    CONN_CACHE
-        .lock()
-        .await
-        .entry(peer.to_string())
-        .or_insert_with(Vec::new)
-        .push(stream);
 }
 
 pub trait Rpc: Serialize + DeserializeOwned {
@@ -144,35 +151,23 @@ pub trait Rpc: Serialize + DeserializeOwned {
         if peer.is_local() {
             self.handle().await
         } else {
-            let mut stream = get_conn(&peer.addr).await?;
+            let mut sender = get_conn(&peer.addr).await?;
+
             let req: Self::Request = self.into();
             let bytes = postcard::to_allocvec(&req)?;
-            stream
-                .write_all(&(bytes.len() as u64).to_le_bytes())
-                .await?;
-            stream.write_all(&bytes).await?;
+            let req = Request::builder().body(Full::new(Bytes::from(bytes)))?;
 
-            // Read remote response.
-            let mut len_buffer = [0u8; 8];
-            stream.read_exact(&mut len_buffer).await?;
-            let len = u64::from_le_bytes(len_buffer) as usize;
-            let mut buffer = vec![0u8; len];
-            stream.read_exact(&mut buffer).await?;
-            put_conn(&peer.addr, stream).await;
-            let parsed = postcard::from_bytes(&buffer)?;
+            let resp = sender.send_request(req).await?;
+
+            let data = resp.into_body().collect().await?.to_bytes();
+            let parsed = postcard::from_bytes(&data)?;
             Ok(parsed)
         }
     }
 
-    async fn remote(self, stream: &mut TcpStream) -> Result<()> {
+    async fn remote(self) -> Result<Vec<u8>> {
         let result = self.handle().await?;
-
-        // Send result.
         let bytes = postcard::to_allocvec(&result)?;
-        stream
-            .write_all(&(bytes.len() as u64).to_le_bytes())
-            .await?;
-        stream.write_all(&bytes).await?;
-        Ok(())
+        Ok(bytes)
     }
 }
