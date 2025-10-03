@@ -91,8 +91,8 @@ static MERKLE: LazyLock<Mutex<Merkle>> = LazyLock::new(|| Mutex::new(Merkle::new
 static SCHED_BASE_TIME: LazyLock<Instant> = LazyLock::new(Instant::now);
 static SCHED_AVAIL_AT: LazyLock<RwLock<HashMap<Uuid, AtomicU64>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
-static TABLE_CACHE: LazyLock<Mutex<Table>> = LazyLock::new(|| {
-    Mutex::new(Table {
+static TABLE_CACHE: LazyLock<RwLock<Table>> = LazyLock::new(|| {
+    RwLock::new(Table {
         id: Uuid::nil(),
         status: TableStatus::Deleted,
     })
@@ -108,7 +108,7 @@ impl Table {
     pub async fn load(id: Uuid) -> Result<Option<Self>> {
         log::debug!("{id} load");
         {
-            let cache = TABLE_CACHE.lock().await;
+            let cache = TABLE_CACHE.read().await;
             if cache.id == id {
                 return Ok(Some(cache.clone()));
             }
@@ -120,7 +120,7 @@ impl Table {
         });
         {
             if let Some(table) = &table {
-                *TABLE_CACHE.lock().await = table.clone();
+                *TABLE_CACHE.write().await = table.clone();
             }
         }
         Ok(table)
@@ -129,7 +129,7 @@ impl Table {
     async fn save_inner(&self) -> Result<Option<Table>> {
         let old = Table::load(self.id).await?;
         {
-            *TABLE_CACHE.lock().await = self.clone();
+            *TABLE_CACHE.write().await = self.clone();
         }
         let blob = postcard::to_allocvec(&self.status)?;
         store::item_set(META, self.id.as_bytes(), &blob).await?;

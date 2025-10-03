@@ -24,15 +24,9 @@ use hyper::{client::conn::http2::SendRequest, server::conn::http2, service::serv
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::fmt::Debug;
-use std::{
-    collections::{hash_map::Entry, HashMap},
-    future::Future,
-    sync::LazyLock,
-};
-use tokio::{
-    net::{TcpListener, TcpStream},
-    sync::Mutex,
-};
+use std::{collections::HashMap, future::Future, sync::LazyLock};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
 /// Await the task (usually some RPC) and keep its peer to aid debugging.
@@ -53,8 +47,8 @@ pub enum Operations {
     GossipFind(GossipFind),
 }
 
-static CONN_CACHE: LazyLock<Mutex<HashMap<String, SendRequest<Full<Bytes>>>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+static CONN_CACHE: LazyLock<RwLock<HashMap<String, SendRequest<Full<Bytes>>>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
 
 impl Operations {
     /// Returns the RPC name for debugging purposes.
@@ -120,28 +114,30 @@ impl Operations {
 }
 
 async fn get_conn(peer: &str) -> Result<SendRequest<Full<Bytes>>> {
-    let mut cache = CONN_CACHE.lock().await;
-    match cache.entry(peer.to_string()) {
-        Entry::Occupied(e) => Ok(e.get().clone()),
-        Entry::Vacant(e) => {
-            let stream = TcpStream::connect(peer).await?;
-            let io = TokioIo::new(stream);
-
-            // Perform an HTTP/2 handshake over the TCP connection
-            let (sender, connection) =
-                hyper::client::conn::http2::handshake(TokioExecutor::new(), io).await?;
-
-            // Spawn the connection driver (handles incoming frames)
-            tokio::spawn(async move {
-                if let Err(err) = connection.await {
-                    eprintln!("Connection error: {:?}", err);
-                }
-            });
-
-            e.insert(sender.clone());
-            Ok(sender)
+    {
+        let cache = CONN_CACHE.read().await;
+        if let Some(conn) = cache.get(peer) {
+            return Ok(conn.clone());
         }
     }
+
+    let mut cache = CONN_CACHE.write().await;
+    let stream = TcpStream::connect(peer).await?;
+    let io = TokioIo::new(stream);
+
+    // Perform an HTTP/2 handshake over the TCP connection
+    let (sender, connection) =
+        hyper::client::conn::http2::handshake(TokioExecutor::new(), io).await?;
+
+    // Spawn the connection driver (handles incoming frames)
+    tokio::spawn(async move {
+        if let Err(err) = connection.await {
+            eprintln!("Connection error: {:?}", err);
+        }
+    });
+
+    cache.insert(peer.to_owned(), sender.clone());
+    Ok(sender)
 }
 
 pub trait Rpc: Serialize + DeserializeOwned {
