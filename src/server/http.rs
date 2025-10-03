@@ -5,6 +5,7 @@ use crate::{
     state::{Table, TableParams, TableStatus},
 };
 use anyhow::Result;
+use axum::body::Body;
 use axum::{
     body::Bytes,
     extract::{DefaultBodyLimit, Path},
@@ -12,7 +13,11 @@ use axum::{
     routing::{delete, get, post},
     Form, Router,
 };
+use futures_util::StreamExt;
+use http_body_util::{Full, StreamBody};
+use hyper::body::Frame;
 use kitsurai::codec::Header;
+use std::convert::Infallible;
 use std::{collections::BTreeMap, io::Write};
 use tokio::net::{TcpListener, ToSocketAddrs};
 use tokio_util::sync::CancellationToken;
@@ -99,7 +104,7 @@ async fn table_delete(Path(table): Path<Uuid>) -> (StatusCode, String) {
 ///
 /// Returns the first `R` values read if successful, or any read value otherwise.
 /// `R` is a parameter that can be configured per table. See [TableParams].
-async fn item_get(Path((table, key)): Path<(Uuid, Bytes)>) -> (StatusCode, Vec<u8>) {
+async fn item_get(Path((table, key)): Path<(Uuid, Bytes)>) -> (StatusCode, Body) {
     match exec::item::item_get(table, key).await {
         Ok(values) => {
             let lengths: Vec<Option<u64>> = values
@@ -108,22 +113,24 @@ async fn item_get(Path((table, key)): Path<(Uuid, Bytes)>) -> (StatusCode, Vec<u
                 .collect();
             match postcard::to_allocvec(&Header { lengths }) {
                 Ok(header) => {
-                    let mut serialized = header;
-                    for value in values.into_iter().flatten() {
-                        serialized.extend(value);
-                    }
-
-                    (StatusCode::OK, serialized)
+                    let header = futures_util::stream::once(async { Bytes::from(header) });
+                    let body = futures_util::stream::iter(values.into_iter().flatten());
+                    let full = header
+                        .chain(body)
+                        .map(|b| Ok::<Frame<Bytes>, Infallible>(Frame::data(b)));
+                    (StatusCode::OK, Body::new(StreamBody::new(full)))
                 }
                 Err(e) => (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("{e}\n").into_bytes(),
+                    Body::new(Full::new(Bytes::from(format!("{e}\n").into_bytes()))),
                 ),
             }
         }
         Err(e) => (
             StatusCode::BAD_REQUEST,
-            format!("{e}\n{}\n", e.backtrace()).into_bytes(),
+            Body::new(Full::new(Bytes::from(
+                format!("{e}\n{}\n", e.backtrace()).into_bytes(),
+            ))),
         ),
     }
 }

@@ -1,8 +1,8 @@
 use crate::{
     exec::Operations,
+    exec::Rpc,
     merkle,
     peer::{self, Peer},
-    rpc::Rpc,
     state::{self, Table, TableStatus},
 };
 use anyhow::Result;

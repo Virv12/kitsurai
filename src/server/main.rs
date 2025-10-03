@@ -2,7 +2,6 @@ mod exec;
 mod http;
 mod merkle;
 mod peer;
-mod rpc;
 mod state;
 
 use crate::exec::{gossip, Operations};

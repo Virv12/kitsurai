@@ -147,9 +147,7 @@ impl Rpc for ItemGet {
     type Response = Result<Option<Bytes>, state::Error>;
 
     async fn handle(self) -> Result<Self::Response> {
-        Ok(state::item_get(self.table, &self.key)
-            .await
-            .map(|opt| opt.map(Bytes::from)))
+        Ok(state::item_get(self.table, &self.key).await)
     }
 }
 

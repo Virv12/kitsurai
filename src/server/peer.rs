@@ -102,10 +102,9 @@ pub fn init(cli: PeerCli, local_addr: SocketAddr) {
         .set(local_index)
         .expect("local index already initialized");
 
-    let zone = match cli.availability_zone {
-        Some(zone) => zone,
-        None => Uuid::new_v4().to_string(),
-    };
+    let zone = cli
+        .availability_zone
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
 
     AVAILABILITY_ZONE
         .set(zone)

@@ -149,7 +149,7 @@ async fn test(name: &str, client: Client, reqs: &[Request]) {
             .unwrap();
     }
 
-    let mut period_us = 1000;
+    let mut period_us = 500;
     loop {
         let period = Duration::from_micros(period_us);
         let good = bench(
@@ -204,7 +204,11 @@ async fn main() {
         action,
     } = Args::parse();
 
-    let client = Client::new();
+    let client = Client::builder()
+        // Already uses HTTP2 if detected and has nodelay set to true.
+        .http2_prior_knowledge()
+        .build()
+        .unwrap();
 
     let reqs: Vec<_> = match action {
         Action::Get => (0..100)

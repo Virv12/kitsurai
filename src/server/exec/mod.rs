@@ -14,6 +14,7 @@ use crate::{
     state::{Table, TableData, TableParams, TableStatus},
 };
 use anyhow::Result;
+use axum::body::Body;
 use bytes::Bytes;
 use derive_more::From;
 use gossip::{GossipFind, GossipSync};
@@ -22,7 +23,12 @@ use http_body_util::{BodyExt, Full};
 use hyper::{client::conn::http2::SendRequest, server::conn::http2, service::service_fn};
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use std::{collections::{hash_map::Entry, HashMap}, future::Future, sync::LazyLock};
+use std::fmt::Debug;
+use std::{
+    collections::{hash_map::Entry, HashMap},
+    future::Future,
+    sync::LazyLock,
+};
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::Mutex,
@@ -52,6 +58,7 @@ static CONN_CACHE: LazyLock<Mutex<HashMap<String, SendRequest<Full<Bytes>>>>> =
 
 impl Operations {
     /// Returns the RPC name for debugging purposes.
+    #[allow(dead_code)]
     fn name(&self) -> &'static str {
         match self {
             Operations::ItemGet(_) => "item-get",
@@ -68,16 +75,14 @@ impl Operations {
     /// Runs the RPC listener.
     ///
     /// Waits for incoming requests, deserializes them and executes the appropriate action.
-    pub async fn listener(listener: TcpListener, token: CancellationToken) -> anyhow::Result<()> {
-        async fn recv(
-            req: Request<hyper::body::Incoming>,
-        ) -> anyhow::Result<Response<Full<Bytes>>> {
+    pub async fn listener(listener: TcpListener, token: CancellationToken) -> Result<()> {
+        async fn recv(req: Request<hyper::body::Incoming>) -> Result<Response<Body>> {
             let body = req.into_body();
             let data = body.collect().await?.to_bytes();
             let variant: Operations = postcard::from_bytes(&data)?;
             // log::debug!("Request from {}: {}", stream.peer_addr()?, variant.name());
 
-            let res = match variant {
+            let body = match variant {
                 Operations::ItemGet(get) => get.remote().await?,
                 Operations::ItemSet(set) => set.remote().await?,
                 Operations::ItemList(list) => list.remote().await?,
@@ -87,10 +92,8 @@ impl Operations {
                 Operations::GossipSync(sync) => sync.remote().await?,
                 Operations::GossipFind(find) => find.remote().await?,
             };
-            let res = Response::builder()
-                .status(200)
-                .body(Full::from(Bytes::from(res)))?;
-            Ok(res)
+
+            Ok(Response::builder().status(200).body(body)?)
         }
 
         loop {
@@ -145,8 +148,6 @@ pub trait Rpc: Serialize + DeserializeOwned {
     type Request: Serialize + DeserializeOwned + From<Self>;
     type Response: Serialize + DeserializeOwned;
 
-    async fn handle(self) -> Result<Self::Response>;
-
     async fn exec(self, peer: &Peer) -> Result<Self::Response> {
         if peer.is_local() {
             self.handle().await
@@ -158,16 +159,19 @@ pub trait Rpc: Serialize + DeserializeOwned {
             let req = Request::builder().body(Full::new(Bytes::from(bytes)))?;
 
             let resp = sender.send_request(req).await?;
-
             let data = resp.into_body().collect().await?.to_bytes();
-            let parsed = postcard::from_bytes(&data)?;
-            Ok(parsed)
+            Ok(postcard::from_bytes(&data)?)
         }
     }
 
-    async fn remote(self) -> Result<Vec<u8>> {
+    /// Implements the RPC on this node, automatically wrapped by the trait on remotes.
+    async fn handle(self) -> Result<Self::Response>;
+
+    /// Wraps the locally produced value into an HTTP Body.
+    /// Can be overridden to provide a faster path.
+    async fn remote(self) -> Result<Body> {
         let result = self.handle().await?;
         let bytes = postcard::to_allocvec(&result)?;
-        Ok(bytes)
+        Ok(Body::new(Full::new(Bytes::from(bytes))))
     }
 }

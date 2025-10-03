@@ -915,6 +915,7 @@ dependencies = [
  "clap",
  "derive_more",
  "env_logger",
+ "futures-util",
  "hex",
  "http",
  "http-body-util",

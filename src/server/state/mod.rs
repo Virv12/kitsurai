@@ -7,6 +7,7 @@ use crate::{
     peer::{self, availability_zone, local_index, Peer},
 };
 use anyhow::Result;
+use bytes::Bytes;
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -310,7 +311,7 @@ async fn sched_wait(table: &Table) {
     tokio::time::sleep_until(instant).await;
 }
 
-pub async fn item_get(table_id: Uuid, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
+pub async fn item_get(table_id: Uuid, key: &[u8]) -> Result<Option<Bytes>, Error> {
     let _guard = LOCK.read().await;
     let table = Table::load(table_id).await.unwrap();
     if !table

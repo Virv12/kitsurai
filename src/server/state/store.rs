@@ -1,10 +1,11 @@
 //! Exposes methods to set and get for a given table and key,
 //!  also supports listing keys in a table.
 
+use bytes::Bytes;
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 use std::{os::unix::ffi::OsStringExt, path::PathBuf, sync::OnceLock};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
 
 /// Where the `sqlite` database should be stored.
@@ -33,27 +34,19 @@ pub fn init(cli: StoreCli) {
 #[derive(thiserror::Error, Serialize, Deserialize, Debug, Clone)]
 pub enum Error {}
 
-pub async fn item_get(table: Uuid, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
+pub async fn item_get(table: Uuid, key: &[u8]) -> Result<Option<Bytes>, Error> {
     log::debug!("{table} get");
     let path = STORE_PATH
         .get()
         .expect("Store path not initialized")
         .join(table.to_string())
         .join(hex::encode(key));
-    let mut file = match tokio::fs::File::open(path).await {
-        Ok(file) => file,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(None);
-        }
-        Err(e) => {
-            panic!("Error opening file: {e}");
-        }
-    };
-    let mut content = Vec::new();
-    file.read_to_end(&mut content)
-        .await
-        .expect("Failed to read file");
-    Ok(Some(content))
+
+    match tokio::fs::read(&path).await {
+        Ok(content) => Ok(Some(Bytes::from(content))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => panic!("Error opening file: {e}"),
+    }
 }
 
 pub async fn item_set(table: Uuid, key: &[u8], value: &[u8]) -> Result<(), Error> {
@@ -76,7 +69,7 @@ pub async fn item_set(table: Uuid, key: &[u8], value: &[u8]) -> Result<(), Error
         .join(table.to_string());
     std::fs::create_dir_all(&path).expect("Failed to create table directory");
     let path = path.join(hex::encode(key));
-    tokio::fs::rename(tmp_path, path)
+    tokio::fs::rename(&tmp_path, &path)
         .await
         .expect("Failed to rename temporary file");
     Ok(())
@@ -107,7 +100,7 @@ pub async fn item_list(table: Uuid) -> Result<Vec<KeyValue>, Error> {
     {
         let key = hex::decode(entry.file_name().into_vec()).unwrap();
         let value = item_get(table, &key).await?.expect("Item should exist");
-        items.push((key, value));
+        items.push((key, value.to_vec()));
     }
     Ok(items)
 }
