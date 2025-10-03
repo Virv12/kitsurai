@@ -149,7 +149,7 @@ async fn test(name: &str, client: Client, reqs: &[Request]) {
             .unwrap();
     }
 
-    let mut period_us = 500;
+    let mut period_us = 200;
     loop {
         let period = Duration::from_micros(period_us);
         let good = bench(
@@ -215,6 +215,7 @@ async fn main() {
             .map(|i| {
                 client
                     .get(format!("http://{server}/{table}/{key}-{i}"))
+                    .timeout(Duration::from_secs(5))
                     .build()
                     .unwrap()
             })
@@ -223,6 +224,7 @@ async fn main() {
             .map(|i| {
                 client
                     .post(format!("http://{server}/{table}/{key}-{i}"))
+                    .timeout(Duration::from_secs(5))
                     .body("value")
                     .build()
                     .unwrap()
