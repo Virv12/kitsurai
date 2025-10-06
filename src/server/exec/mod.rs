@@ -24,9 +24,9 @@ use hyper::{client::conn::http2::SendRequest, server::conn::http2, service::serv
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::fmt::Debug;
+use std::sync::RwLock as StdRwLock;
 use std::{collections::HashMap, future::Future, sync::LazyLock};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
 /// Await the task (usually some RPC) and keep its peer to aid debugging.
@@ -47,8 +47,8 @@ pub enum Operations {
     GossipFind(GossipFind),
 }
 
-static CONN_CACHE: LazyLock<RwLock<HashMap<String, SendRequest<Full<Bytes>>>>> =
-    LazyLock::new(|| RwLock::new(HashMap::new()));
+static CONN_CACHE: LazyLock<StdRwLock<HashMap<String, SendRequest<Full<Bytes>>>>> =
+    LazyLock::new(|| StdRwLock::new(HashMap::new()));
 
 impl Operations {
     /// Returns the RPC name for debugging purposes.
@@ -115,13 +115,12 @@ impl Operations {
 
 async fn get_conn(peer: &str) -> Result<SendRequest<Full<Bytes>>> {
     {
-        let cache = CONN_CACHE.read().await;
+        let cache = CONN_CACHE.read().expect("poisoned");
         if let Some(conn) = cache.get(peer) {
             return Ok(conn.clone());
         }
     }
 
-    let mut cache = CONN_CACHE.write().await;
     let stream = TcpStream::connect(peer).await?;
     let io = TokioIo::new(stream);
 
@@ -136,6 +135,7 @@ async fn get_conn(peer: &str) -> Result<SendRequest<Full<Bytes>>> {
         }
     });
 
+    let mut cache = CONN_CACHE.write().expect("poisoned");
     cache.insert(peer.to_owned(), sender.clone());
     Ok(sender)
 }

@@ -10,6 +10,7 @@ use anyhow::Result;
 use bytes::Bytes;
 use clap::Parser;
 use serde::{Deserialize, Serialize};
+use std::sync::RwLock as StdRwLock;
 use std::{
     collections::BTreeMap,
     sync::atomic::{AtomicI64, AtomicU64, Ordering},
@@ -89,10 +90,10 @@ impl TableData {
 static LOCK: LazyLock<RwLock<()>> = LazyLock::new(|| RwLock::new(()));
 static MERKLE: LazyLock<Mutex<Merkle>> = LazyLock::new(|| Mutex::new(Merkle::new()));
 static SCHED_BASE_TIME: LazyLock<Instant> = LazyLock::new(Instant::now);
-static SCHED_AVAIL_AT: LazyLock<RwLock<HashMap<Uuid, AtomicU64>>> =
-    LazyLock::new(|| RwLock::new(HashMap::new()));
-static TABLE_CACHE: LazyLock<RwLock<Table>> = LazyLock::new(|| {
-    RwLock::new(Table {
+static SCHED_AVAIL_AT: LazyLock<StdRwLock<HashMap<Uuid, AtomicU64>>> =
+    LazyLock::new(|| StdRwLock::new(HashMap::new()));
+static TABLE_CACHE: LazyLock<StdRwLock<Table>> = LazyLock::new(|| {
+    StdRwLock::new(Table {
         id: Uuid::nil(),
         status: TableStatus::Deleted,
     })
@@ -108,7 +109,7 @@ impl Table {
     pub async fn load(id: Uuid) -> Result<Option<Self>> {
         log::debug!("{id} load");
         {
-            let cache = TABLE_CACHE.read().await;
+            let cache = TABLE_CACHE.read().expect("poisoned");
             if cache.id == id {
                 return Ok(Some(cache.clone()));
             }
@@ -120,7 +121,7 @@ impl Table {
         });
         {
             if let Some(table) = &table {
-                *TABLE_CACHE.write().await = table.clone();
+                *TABLE_CACHE.write().expect("poisoned") = table.clone();
             }
         }
         Ok(table)
@@ -129,7 +130,7 @@ impl Table {
     async fn save_inner(&self) -> Result<Option<Table>> {
         let old = Table::load(self.id).await?;
         {
-            *TABLE_CACHE.write().await = self.clone();
+            *TABLE_CACHE.write().expect("poisoned") = self.clone();
         }
         let blob = postcard::to_allocvec(&self.status)?;
         store::item_set(META, self.id.as_bytes(), &blob).await?;
@@ -139,12 +140,12 @@ impl Table {
                 MERKLE.lock().await.insert(self.id.to_u128_le(), &blob);
                 SCHED_AVAIL_AT
                     .write()
-                    .await
+                    .expect("poisoned")
                     .insert(self.id, AtomicU64::new(0));
             }
             TableStatus::Deleted => {
                 MERKLE.lock().await.insert(self.id.to_u128_le(), &blob);
-                SCHED_AVAIL_AT.write().await.remove(&self.id);
+                SCHED_AVAIL_AT.write().expect("poisoned").remove(&self.id);
             }
         }
         Ok(old)
@@ -245,7 +246,6 @@ pub async fn init(cli: StateCli) {
     LazyLock::force(&SCHED_BASE_TIME);
 
     let mut merkle = MERKLE.lock().await;
-    let mut available = SCHED_AVAIL_AT.write().await;
 
     for mut table in Table::list().await.expect("could not get table list") {
         match table.status {
@@ -269,6 +269,7 @@ pub async fn init(cli: StateCli) {
                 let data = postcard::to_allocvec(&table.status).unwrap();
                 merkle.insert(table.id.to_u128_le(), &data);
 
+                let mut available = SCHED_AVAIL_AT.write().expect("poisoned");
                 available.insert(table.id, AtomicU64::new(0));
             }
             TableStatus::Deleted => {
@@ -297,22 +298,24 @@ async fn sched_wait(table: &Table) {
         _ => panic!("table must be created to wait for scheduler"),
     };
 
-    let available = SCHED_AVAIL_AT.read().await;
-    let available = available
-        .get(&table.id)
-        .expect("table should be registered");
+    let instant = {
+        let available = SCHED_AVAIL_AT.read().expect("poisoned");
+        let available = available
+            .get(&table.id)
+            .expect("table should be registered");
 
-    let filter = SCHED_BASE_TIME.elapsed() - tokio::time::Duration::from_secs(1) / 10;
-    let filter = (filter * bandwidth).as_secs();
-    available.fetch_max(filter, Ordering::Relaxed);
+        let filter = SCHED_BASE_TIME.elapsed() - tokio::time::Duration::from_secs(1) / 10;
+        let filter = (filter * bandwidth).as_secs();
+        available.fetch_max(filter, Ordering::Relaxed);
 
-    let at = available.fetch_add(1, Ordering::Relaxed);
-    let instant = *SCHED_BASE_TIME + tokio::time::Duration::from_secs(at) / bandwidth;
+        let at = available.fetch_add(1, Ordering::Relaxed);
+        *SCHED_BASE_TIME + tokio::time::Duration::from_secs(at) / bandwidth
+    };
     tokio::time::sleep_until(instant).await;
 }
 
 pub async fn item_get(table_id: Uuid, key: &[u8]) -> Result<Option<Bytes>, Error> {
-    let _guard = LOCK.read().await;
+    // let _guard = LOCK.read().await;
     let table = Table::load(table_id).await.unwrap();
     if !table
         .as_ref()
@@ -325,7 +328,7 @@ pub async fn item_get(table_id: Uuid, key: &[u8]) -> Result<Option<Bytes>, Error
 }
 
 pub async fn item_set(table_id: Uuid, key: &[u8], value: &[u8]) -> Result<(), Error> {
-    let _guard = LOCK.read().await;
+    // let _guard = LOCK.read().await;
     let table = Table::load(table_id).await.unwrap();
     if !table
         .as_ref()
@@ -338,7 +341,7 @@ pub async fn item_set(table_id: Uuid, key: &[u8], value: &[u8]) -> Result<(), Er
 }
 
 pub async fn item_list(table_id: Uuid) -> Result<Vec<KeyValue>, Error> {
-    let _guard = LOCK.read().await;
+    // let _guard = LOCK.read().await;
     let table = Table::load(table_id).await.unwrap();
     if !table.is_some_and(|t| matches!(t.status, TableStatus::Created(_))) {
         return Err(Error::TableNotFound);
