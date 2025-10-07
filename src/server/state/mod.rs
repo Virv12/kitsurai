@@ -4,7 +4,7 @@ mod store;
 
 use crate::{
     merkle::{self, Merkle},
-    peer::{self, availability_zone, local_index, Peer},
+    peer::{self, local_index, Peer},
 };
 use anyhow::Result;
 use bytes::Bytes;
@@ -54,7 +54,7 @@ pub struct TableParams {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct TableData {
-    pub allocation: BTreeMap<(String, u64), u64>,
+    pub allocation: BTreeMap<u64, u64>,
     pub params: TableParams,
 }
 
@@ -66,14 +66,13 @@ impl TableData {
         let index = self
             .allocation
             .iter()
-            .scan(0, |acc, (k, &v)| {
+            .scan(0, |acc, (&k, &v)| {
                 *acc += v;
                 Some((k, *acc))
             })
             .find(|&(_, acc)| acc > ord)
             .expect("index should be less than sigma")
-            .0
-             .1;
+            .0;
 
         &peer::peers()[index as usize]
     }
@@ -209,7 +208,7 @@ impl Table {
             TableStatus::Prepared { allocated } => allocated,
             TableStatus::Created(ref data) => data
                 .allocation
-                .get(&(availability_zone().to_owned(), local_index() as u64))
+                .get(&(local_index() as u64))
                 .copied()
                 .unwrap_or(0),
             _ => 0,
@@ -254,10 +253,7 @@ pub async fn init(cli: StateCli) {
                 table.save().await.expect("failed to prepared table");
             }
             TableStatus::Created(ref data) => {
-                if let Some(&allocated) = data
-                    .allocation
-                    .get(&(availability_zone().to_owned(), (local_index() as u64)))
-                {
+                if let Some(&allocated) = data.allocation.get(&(local_index() as u64)) {
                     let prev = BANDWIDTH.fetch_sub(allocated as i64, Ordering::Relaxed);
                     if prev - (allocated as i64) < 0 {
                         panic!(
@@ -292,7 +288,7 @@ async fn sched_wait(table: &Table) {
     let bandwidth = match &table.status {
         TableStatus::Created(data) => data
             .allocation
-            .get(&(availability_zone().to_owned(), local_index() as u64))
+            .get(&(local_index() as u64))
             .copied()
             .expect("table should be allocated") as u32,
         _ => panic!("table must be created to wait for scheduler"),

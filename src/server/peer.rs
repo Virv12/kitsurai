@@ -8,6 +8,7 @@ use std::{
     sync::OnceLock,
 };
 use uuid::Uuid;
+use xxhash_rust::xxh3::xxh3_128;
 
 static PEERS: OnceLock<Vec<Peer>> = OnceLock::new();
 static LOCAL_INDEX: OnceLock<usize> = OnceLock::new();
@@ -102,9 +103,9 @@ pub fn init(cli: PeerCli, local_addr: SocketAddr) {
         .set(local_index)
         .expect("local index already initialized");
 
-    let zone = cli
-        .availability_zone
-        .unwrap_or_else(|| Uuid::new_v4().to_string());
+    let zone = cli.availability_zone.unwrap_or_else(|| {
+        Uuid::new_v8(xxh3_128(local_addr.to_string().as_bytes()).to_ne_bytes()).to_string()
+    });
 
     AVAILABILITY_ZONE
         .set(zone)

@@ -97,34 +97,31 @@ pub async fn table_create(
     }
 
     let data = TableData {
-        allocation: allocation_peer,
+        allocation: allocation_peer.iter().map(|((_, p), b)| (*p, *b)).collect(),
         params,
     };
 
     let mut set = JoinSet::new();
-    for (_, index) in data.allocation.keys() {
+    for &index in data.allocation.keys() {
         let rpc = TableCommit {
             id,
             table: data.clone(),
         };
-        let peer = &peer::peers()[*index as usize];
+        let peer = &peer::peers()[index as usize];
         set.spawn(rpc.exec(peer));
     }
     let results = set.join_all().await;
     log::debug!("commit results {results:?}");
     if results.iter().flatten().any(Result::is_err) {
-        for (_, index) in data.allocation.keys() {
+        for &index in data.allocation.keys() {
             let rpc = TableDelete { id };
-            let peer = &peer::peers()[*index as usize];
+            let peer = &peer::peers()[index as usize];
             tokio::spawn(rpc.exec(peer));
         }
         bail!("could not commit table");
     }
 
-    if !data
-        .allocation
-        .contains_key(&(availability_zone().to_owned(), local_index() as u64))
-    {
+    if !data.allocation.contains_key(&(local_index() as u64)) {
         Table {
             id,
             status: TableStatus::Created(data),
@@ -222,7 +219,7 @@ impl Rpc for TableCommit {
             let post_bandwidth = rpc
                 .table
                 .allocation
-                .get(&(availability_zone().to_owned(), local_index() as u64))
+                .get(&(local_index() as u64))
                 .copied()
                 .unwrap_or(0);
 
@@ -271,7 +268,7 @@ pub async fn table_delete(id: Uuid) -> anyhow::Result<()> {
     };
 
     let mut set = JoinSet::new();
-    for &(_, peer_id) in data.allocation.keys() {
+    for &peer_id in data.allocation.keys() {
         let rpc = TableDelete { id };
         set.spawn(rpc.exec(&peer::peers()[peer_id as usize]));
     }

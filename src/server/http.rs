@@ -67,7 +67,7 @@ async fn table_list() -> (StatusCode, String) {
                         t.params.w,
                         t.allocation
                             .into_iter()
-                            .map(|((_, i), b)| format!("{b}@{}", peer::peers()[i as usize].addr))
+                            .map(|(i, b)| format!("{b}@{}", peer::peers()[i as usize].addr))
                             .collect::<Vec<String>>()
                             .join(", ")
                     ))
