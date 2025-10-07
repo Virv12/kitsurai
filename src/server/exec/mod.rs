@@ -24,6 +24,7 @@ use hyper::{client::conn::http2::SendRequest, server::conn::http2, service::serv
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::fmt::Debug;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::RwLock as StdRwLock;
 use std::{collections::HashMap, future::Future, sync::LazyLock};
 use tokio::net::{TcpListener, TcpStream};
@@ -46,9 +47,6 @@ pub enum Operations {
     GossipSync(GossipSync),
     GossipFind(GossipFind),
 }
-
-static CONN_CACHE: LazyLock<StdRwLock<HashMap<String, SendRequest<Full<Bytes>>>>> =
-    LazyLock::new(|| StdRwLock::new(HashMap::new()));
 
 impl Operations {
     /// Returns the RPC name for debugging purposes.
@@ -113,31 +111,57 @@ impl Operations {
     }
 }
 
+type Connection = SendRequest<Full<Bytes>>;
+
+struct ConnectionQueue {
+    current: AtomicUsize,
+    queue: Vec<Connection>,
+}
+
+impl ConnectionQueue {
+    fn next(&self) -> Connection {
+        self.queue[self.current.fetch_add(1, Ordering::Relaxed) % self.queue.len()].clone()
+    }
+}
+
+static CONN_CACHE: LazyLock<StdRwLock<HashMap<String, ConnectionQueue>>> =
+    LazyLock::new(|| StdRwLock::new(HashMap::new()));
+
 async fn get_conn(peer: &str) -> Result<SendRequest<Full<Bytes>>> {
     {
-        let cache = CONN_CACHE.read().expect("poisoned");
+        let cache = CONN_CACHE.read().expect("not poisoned");
         if let Some(conn) = cache.get(peer) {
-            return Ok(conn.clone());
+            return Ok(conn.next());
         }
     }
 
-    let stream = TcpStream::connect(peer).await?;
-    let io = TokioIo::new(stream);
+    let mut queue = vec![];
+    for _ in 0..20 {
+        let stream = TcpStream::connect(peer).await?;
+        let io = TokioIo::new(stream);
 
-    // Perform an HTTP/2 handshake over the TCP connection
-    let (sender, connection) =
-        hyper::client::conn::http2::handshake(TokioExecutor::new(), io).await?;
+        // Perform an HTTP/2 handshake over the TCP connection
+        let (sender, connection) =
+            hyper::client::conn::http2::handshake(TokioExecutor::new(), io).await?;
 
-    // Spawn the connection driver (handles incoming frames)
-    tokio::spawn(async move {
-        if let Err(err) = connection.await {
-            eprintln!("Connection error: {:?}", err);
-        }
-    });
+        // Spawn the connection driver (handles incoming frames)
+        tokio::spawn(async move {
+            if let Err(err) = connection.await {
+                eprintln!("Connection error: {:?}", err);
+            }
+        });
+
+        queue.push(sender);
+    }
 
     let mut cache = CONN_CACHE.write().expect("poisoned");
-    cache.insert(peer.to_owned(), sender.clone());
-    Ok(sender)
+    let conn_queue = ConnectionQueue {
+        queue,
+        current: AtomicUsize::new(0),
+    };
+    let conn = conn_queue.next();
+    cache.insert(peer.to_owned(), conn_queue);
+    Ok(conn)
 }
 
 pub trait Rpc: Serialize + DeserializeOwned {
