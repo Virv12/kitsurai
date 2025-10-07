@@ -237,7 +237,7 @@ async fn main() {
                 client
                     .post(format!("http://{server}/{table}/{key}-{i}"))
                     .timeout(Duration::from_secs(5))
-                    .body("value")
+                    .body(vec![0u8; 4096])
                     .build()
                     .unwrap()
             })
