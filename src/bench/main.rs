@@ -1,11 +1,12 @@
+use clap::{Parser, Subcommand};
+use reqwest::{Client, Request};
+use std::ops::Add;
+use std::time::{SystemTime, UNIX_EPOCH};
 use std::{
     fs::File,
     io::Write,
     time::{Duration, Instant},
 };
-
-use clap::{Parser, Subcommand};
-use reqwest::{Client, Request};
 use tokio::task::JoinSet;
 
 type Res = Result<f64, ()>;
@@ -149,8 +150,19 @@ async fn test(name: &str, client: Client, reqs: &[Request]) {
             .unwrap();
     }
 
+    const SYNC_S: u64 = 25;
+
     let mut period_us = 200;
     loop {
+        let unix = UNIX_EPOCH.elapsed().unwrap().as_secs();
+        let unix_start = unix.next_multiple_of(SYNC_S);
+        let unix_diff = UNIX_EPOCH
+            .add(Duration::from_secs(unix_start))
+            .duration_since(SystemTime::now())
+            .unwrap();
+        println!("Starting in {:?}", unix_diff);
+        tokio::time::sleep(unix_diff).await;
+
         let period = Duration::from_micros(period_us);
         let good = bench(
             &format!("{name}-{:.3}ms", period_us as f64 / 1000.),
