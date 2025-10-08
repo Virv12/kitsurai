@@ -4,6 +4,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use http_body_util::{BodyExt, Full};
 use hyper::client::conn::http2::SendRequest;
 use hyper_util::rt::{TokioExecutor, TokioIo};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::{fs::File, io::Write, time::Duration};
 use tokio::net::TcpStream;
@@ -93,17 +94,19 @@ async fn bench_max(name: &str, server: &str, reqs: RequestFn, tasks: u64) -> Res
     let start_at = Instant::now() + Duration::from_millis(10);
     let end_at = start_at + Duration::from_secs(20);
 
+    let idx = Arc::new(AtomicUsize::new(0));
+
     let mut set = JoinSet::new();
     for task_idx in 0..tasks as usize {
         let reqs = reqs.clone();
         let client = clients[task_idx % clients.len()].clone();
+        let idx = idx.clone();
         set.spawn(async move {
             tokio::time::sleep_until(start_at).await;
-            let mut idx = 0;
             let mut res = Vec::new();
             let mut bad_count = 0;
             while Instant::now() < end_at {
-                let req = reqs(idx * tasks as usize + task_idx);
+                let req = reqs(idx.fetch_add(1, Ordering::Relaxed));
                 let r = exec_req(client.clone(), req).await;
                 match r {
                     Ok(r) => res.push(r),
@@ -114,7 +117,6 @@ async fn bench_max(name: &str, server: &str, reqs: RequestFn, tasks: u64) -> Res
                         }
                     }
                 }
-                idx += 1;
             }
             (res, bad_count)
         });
