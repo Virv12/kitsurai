@@ -74,8 +74,8 @@ pub async fn item_set(table: Uuid, key: &[u8], value: &[u8]) -> Result<(), Error
         .await
         .expect("Failed to write to file");
 
-    // #[cfg(not(target_vendor = "apple"))]
-    // file.sync_all().await.expect("Failed to sync file");
+    #[cfg(not(target_vendor = "apple"))]
+    file.sync_all().await.expect("Failed to sync file");
     #[cfg(target_vendor = "apple")]
     fsync(&file).expect("Failed to fsync file");
 
