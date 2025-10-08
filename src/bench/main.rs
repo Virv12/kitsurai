@@ -1,6 +1,6 @@
 use anyhow::Result;
 use bytes::Bytes;
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use http_body_util::{BodyExt, Full};
 use hyper::client::conn::http2::SendRequest;
 use hyper_util::rt::{TokioExecutor, TokioIo};
@@ -84,6 +84,70 @@ async fn run_lstress(server: &str, reqs: RequestFn, tasks: u64) {
     set.join_all().await;
 }
 
+async fn bench_max(name: &str, server: &str, reqs: RequestFn, tasks: u64) -> Result<()> {
+    let mut clients = Vec::new();
+    for _ in 0..20 {
+        clients.push(get_conn(server).await.unwrap());
+    }
+
+    let start_at = Instant::now() + Duration::from_millis(10);
+    let end_at = start_at + Duration::from_secs(20);
+
+    let mut set = JoinSet::new();
+    for task_idx in 0..tasks as usize {
+        let reqs = reqs.clone();
+        let client = clients[task_idx % clients.len()].clone();
+        set.spawn(async move {
+            tokio::time::sleep_until(start_at).await;
+            let mut idx = 0;
+            let mut res = Vec::new();
+            let mut bad_count = 0;
+            while Instant::now() < end_at {
+                let req = reqs(idx * tasks as usize + task_idx);
+                let r = exec_req(client.clone(), req).await;
+                match r {
+                    Ok(r) => res.push(r),
+                    Err(()) => {
+                        bad_count += 1;
+                        if bad_count >= 10 {
+                            break;
+                        }
+                    }
+                }
+                idx += 1;
+            }
+            (res, bad_count)
+        });
+    }
+
+    let mut res = Vec::new();
+    let mut bad_count = 0;
+    while let Some(r) = set.join_next().await {
+        let (mut r, bc) = r.unwrap();
+        bad_count += bc;
+        res.append(&mut r);
+    }
+
+    let good_count = res.len();
+    let count_req = good_count + bad_count;
+    let sum: f64 = res.iter().sum();
+    let avg = sum / good_count as f64;
+    let mdev = res.iter().map(|x| (x - avg).abs()).sum::<f64>() / good_count as f64;
+    let p0 = res.first().unwrap();
+    let p50 = res[good_count / 2];
+    let p90 = res[good_count * 9 / 10];
+    let p99 = res[good_count * 99 / 100];
+    let p999 = res[good_count * 999 / 1000];
+    let p100 = res.last().unwrap();
+
+    println!(
+        "[{name}] req/s: {} count: {count_req}, bad: {bad_count}, avg: {avg:.3}, mdev: {mdev:.3}, p0: {p0:.3}, p50: {p50:.3}, p90: {p90:.3}, p99: {p99:.3}, p99.9: {p999:.3}, p100: {p100:.3}",
+        count_req as f64 / 20.,
+    );
+
+    Ok(())
+}
+
 async fn bench(
     name: &str,
     server: &str,
@@ -165,7 +229,7 @@ async fn bench(
     true
 }
 
-async fn test(name: &str, server: &str, reqs: RequestFn) {
+async fn test(name: &str, server: &str, reqs: RequestFn, graph: u64) {
     let mut out = File::create(format!("bench-{name}.csv")).unwrap();
     writeln!(
         out,
@@ -175,7 +239,7 @@ async fn test(name: &str, server: &str, reqs: RequestFn) {
 
     //const SYNC_S: u64 = 30;
 
-    let mut period_us = 30;
+    let mut period_us = graph;
     loop {
         //let unix = UNIX_EPOCH.elapsed().unwrap().as_secs();
         //let unix_start = unix.next_multiple_of(SYNC_S);
@@ -209,20 +273,24 @@ struct Args {
     #[clap(short, long, default_value = "localhost:8000")]
     server: String,
 
-    #[clap(long)]
-    freq_stress: Option<u64>,
-
-    #[clap(long)]
-    lat_stress: Option<u64>,
-
     table: String,
     key: String,
 
-    #[clap(subcommand)]
     action: Action,
+
+    #[clap(subcommand)]
+    command: Command,
 }
 
 #[derive(Subcommand)]
+enum Command {
+    FreqStress { freq: u64 },
+    LatStress { tasks: u64 },
+    Graph { start_period: u64 },
+    Max { tasks: u64 },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
 enum Action {
     Get,
     Set,
@@ -247,14 +315,13 @@ async fn get_conn(peer: &str) -> Result<Client> {
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<()> {
     let Args {
         server,
-        freq_stress,
-        lat_stress,
         table,
         key,
         action,
+        command,
     } = Args::parse();
 
     let reqs: RequestFn = match action {
@@ -272,23 +339,28 @@ async fn main() {
         }),
     };
 
-    match (freq_stress, lat_stress) {
-        (Some(freq), None) => {
+    match command {
+        Command::FreqStress { freq } => {
             run_fstress(&server, reqs, freq).await;
         }
-        (None, Some(lat)) => {
-            run_lstress(&server, reqs, lat).await;
+        Command::LatStress { tasks } => {
+            run_lstress(&server, reqs, tasks).await;
         }
-        (None, None) => {
+        Command::Graph { start_period } => {
             let name = match action {
                 Action::Get => "get",
                 Action::Set => "set",
             };
-            test(name, &server, reqs).await;
+            test(name, &server, reqs, start_period).await;
         }
-        _ => {
-            eprintln!("Please specify either --freq-stress or --lat-stress, not both.");
-            return;
+        Command::Max { tasks } => {
+            let name = match action {
+                Action::Get => "get",
+                Action::Set => "set",
+            };
+            bench_max(name, &server, reqs, tasks).await?;
         }
     }
+
+    Ok(())
 }
