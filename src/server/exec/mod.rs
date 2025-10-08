@@ -130,8 +130,11 @@ static CONN_CACHE: LazyLock<StdRwLock<HashMap<String, ConnectionQueue>>> =
 async fn get_conn(peer: &str) -> Result<SendRequest<Full<Bytes>>> {
     {
         let cache = CONN_CACHE.read().expect("not poisoned");
-        if let Some(conn) = cache.get(peer) {
-            return Ok(conn.next());
+        if let Some(conn_queue) = cache.get(peer) {
+            let conn = conn_queue.next();
+            if !conn.is_closed() {
+                return Ok(conn);
+            }
         }
     }
 
