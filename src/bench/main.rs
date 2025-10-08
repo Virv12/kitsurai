@@ -128,6 +128,8 @@ async fn bench_max(name: &str, server: &str, reqs: RequestFn, tasks: u64) -> Res
         res.append(&mut r);
     }
 
+    res.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
     let good_count = res.len();
     let count_req = good_count + bad_count;
     let sum: f64 = res.iter().sum();
