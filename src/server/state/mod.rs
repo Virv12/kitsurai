@@ -145,6 +145,7 @@ impl Table {
             TableStatus::Deleted => {
                 MERKLE.lock().await.insert(self.id.to_u128_le(), &blob);
                 SCHED_AVAIL_AT.write().expect("poisoned").remove(&self.id);
+                // TODO: Check again someday.
             }
         }
         Ok(old)

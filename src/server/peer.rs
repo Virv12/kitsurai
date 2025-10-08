@@ -95,6 +95,10 @@ pub fn init(cli: PeerCli, local_addr: SocketAddr) {
         .position(|p| is_self(local_addr, &p.addr))
         .expect("self is not in peers");
 
+    let zone = cli.availability_zone.unwrap_or_else(|| {
+        Uuid::new_v8(xxh3_128(peers[local_index].addr.as_bytes()).to_ne_bytes()).to_string()
+    });
+
     PEERS
         .set(peers)
         .expect("peers should not be initialized!!!");
@@ -102,10 +106,6 @@ pub fn init(cli: PeerCli, local_addr: SocketAddr) {
     LOCAL_INDEX
         .set(local_index)
         .expect("local index already initialized");
-
-    let zone = cli.availability_zone.unwrap_or_else(|| {
-        Uuid::new_v8(xxh3_128(local_addr.to_string().as_bytes()).to_ne_bytes()).to_string()
-    });
 
     AVAILABILITY_ZONE
         .set(zone)

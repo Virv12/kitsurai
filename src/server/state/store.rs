@@ -4,7 +4,9 @@
 use bytes::Bytes;
 use clap::Parser;
 use serde::{Deserialize, Serialize};
+use std::os::fd::{AsFd, AsRawFd};
 use std::{os::unix::ffi::OsStringExt, path::PathBuf, sync::OnceLock};
+use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
 
@@ -49,6 +51,15 @@ pub async fn item_get(table: Uuid, key: &[u8]) -> Result<Option<Bytes>, Error> {
     }
 }
 
+#[cfg(target_vendor = "apple")]
+fn fsync(f: &File) -> anyhow::Result<()> {
+    if unsafe { libc::fsync(f.as_fd().as_raw_fd()) } == -1 {
+        Err(std::io::Error::last_os_error().into())
+    } else {
+        Ok(())
+    }
+}
+
 pub async fn item_set(table: Uuid, key: &[u8], value: &[u8]) -> Result<(), Error> {
     log::debug!("{table} set");
     let tmp_path = STORE_PATH
@@ -56,13 +67,18 @@ pub async fn item_set(table: Uuid, key: &[u8], value: &[u8]) -> Result<(), Error
         .expect("Store path not initialized")
         .join("tmp")
         .join(Uuid::now_v7().to_string());
-    let mut file = tokio::fs::File::create_new(&tmp_path)
+    let mut file = File::create_new(&tmp_path)
         .await
         .expect("Failed to create file");
     file.write_all(value)
         .await
         .expect("Failed to write to file");
-    file.sync_all().await.expect("Failed to sync file");
+
+    // #[cfg(not(target_vendor = "apple"))]
+    // file.sync_all().await.expect("Failed to sync file");
+    #[cfg(target_vendor = "apple")]
+    fsync(&file).expect("Failed to fsync file");
+
     let path = STORE_PATH
         .get()
         .expect("Store path not initialized")
