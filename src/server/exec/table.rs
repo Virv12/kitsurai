@@ -7,7 +7,6 @@ use anyhow::bail;
 use serde::{Deserialize, Serialize};
 use std::num::NonZeroU64;
 use std::{collections::BTreeMap, sync::LazyLock};
-use thiserror::Error;
 use tokio::{
     sync::Mutex,
     task::{JoinHandle, JoinSet},
@@ -22,7 +21,7 @@ static PENDING: LazyLock<Mutex<BTreeMap<Uuid, JoinHandle<()>>>> =
     LazyLock::new(|| Mutex::new(BTreeMap::new()));
 
 /// All table errors.
-#[derive(Error, Debug, Serialize, Deserialize)]
+#[derive(thiserror::Error, Debug, Serialize, Deserialize)]
 pub enum Error {
     #[error("state error")]
     State(#[from] state::Error),
