@@ -4,7 +4,6 @@
 use bytes::Bytes;
 use clap::Parser;
 use serde::{Deserialize, Serialize};
-use std::os::fd::{AsFd, AsRawFd};
 use std::{os::unix::ffi::OsStringExt, path::PathBuf, sync::OnceLock};
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
@@ -53,6 +52,8 @@ pub async fn item_get(table: Uuid, key: &[u8]) -> Result<Option<Bytes>, Error> {
 
 #[cfg(target_vendor = "apple")]
 fn fsync(f: &File) -> anyhow::Result<()> {
+    use std::os::fd::{AsFd, AsRawFd};
+
     if unsafe { libc::fsync(f.as_fd().as_raw_fd()) } == -1 {
         Err(std::io::Error::last_os_error().into())
     } else {
