@@ -84,6 +84,8 @@ async fn sync(peer: &'static Peer, path: merkle::Path) -> Result<()> {
         let table = table.map(|table| table.status);
         let res = GossipSync { id, table }.exec(peer).await?;
         if let Some(table) = res {
+            // if this fails then possibly the other peer failed to save but their errors are discarded
+            // yay
             Table { id, status: table }.save().await?;
         }
     }
@@ -103,12 +105,12 @@ impl Rpc for GossipSync {
 
     async fn handle(self) -> Result<Self::Response> {
         if let Some(table) = self.table {
-            Table {
+            let _ = Table {
                 id: self.id,
                 status: table,
             }
             .save()
-            .await?;
+            .await;
         }
 
         Table::load(self.id)
