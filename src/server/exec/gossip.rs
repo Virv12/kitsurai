@@ -1,3 +1,4 @@
+use crate::state::Error;
 use crate::{
     exec::Operations,
     exec::Rpc,
@@ -104,18 +105,23 @@ impl Rpc for GossipSync {
     type Response = Option<TableStatus>;
 
     async fn handle(self) -> Result<Self::Response> {
-        if let Some(table) = self.table {
-            let _ = Table {
+        if let Some(status) = self.table {
+            let table = Table {
                 id: self.id,
-                status: table,
+                status,
             }
             .save()
             .await;
+
+            match table {
+                Ok(()) | Err(Error::NotGrowing) => {}
+                Err(e) => return Err(e.into()),
+            }
         }
 
-        Table::load(self.id)
+        Ok(Table::load(self.id)
             .await
-            .map(|opt| opt.map(|table| table.status))
+            .map(|opt| opt.map(|table| table.status))?)
     }
 }
 

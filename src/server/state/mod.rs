@@ -3,12 +3,11 @@
 mod bandwidth;
 mod store;
 
-use crate::exec::table::TableError::{Expired, NotPrepared, State, TooMuchBandwidth};
+use crate::state::Error::TooMuchBandwidth;
 use crate::{
     merkle::{self, Merkle},
     peer::{self, local_index, Peer},
 };
-use anyhow::{bail, Result};
 use bytes::Bytes;
 use clap::Parser;
 use serde::{Deserialize, Serialize};
@@ -118,8 +117,26 @@ pub struct Table {
     pub status: TableStatus,
 }
 
+#[derive(thiserror::Error, Debug, Serialize, Deserialize, Clone)]
+pub enum Error {
+    #[error("table not found")]
+    NotFound,
+    #[error("table exists")]
+    Exists,
+    #[error("table not prepared")]
+    NotPrepared,
+    #[error("expired table")]
+    Expired,
+    #[error("bandwidth error")]
+    TooMuchBandwidth,
+    #[error("not a growing save")]
+    NotGrowing,
+    #[error("store error")]
+    Store(#[from] store::Error),
+}
+
 impl Table {
-    pub async fn list() -> Result<Vec<Self>> {
+    pub async fn list() -> Result<Vec<Self>, Error> {
         let _guard = LOCK.read().await;
 
         log::debug!("list");
@@ -135,7 +152,7 @@ impl Table {
         Ok(tables)
     }
 
-    async fn locked_load(id: Uuid) -> Result<Option<Self>> {
+    async fn locked_load(id: Uuid) -> Result<Option<Self>, Error> {
         log::debug!("{id} load");
         assert!(LOCK.try_write().is_err());
 
@@ -158,16 +175,16 @@ impl Table {
         Ok(table)
     }
 
-    pub async fn load(id: Uuid) -> Result<Option<Self>> {
+    pub async fn load(id: Uuid) -> Result<Option<Self>, Error> {
         let _guard = LOCK.read().await;
         Self::locked_load(id).await
     }
 
-    async fn locked_save(&self) -> Result<()> {
+    async fn locked_save(&self) -> Result<(), Error> {
         log::debug!("{} save", self.id);
         assert!(LOCK.try_read().is_err());
 
-        let blob = postcard::to_allocvec(&self.status)?;
+        let blob = postcard::to_allocvec(&self.status).expect("serialization failed");
         store::item_set(META, self.id.as_bytes(), &blob).await?;
 
         match &self.status {
@@ -193,15 +210,13 @@ impl Table {
         Ok(())
     }
 
-    pub async fn prepare(id: Uuid, requested: u64) -> Result<Option<NonZeroU64>> {
+    pub async fn prepare(id: Uuid, requested: u64) -> Result<Option<NonZeroU64>, Error> {
         log::debug!("{id} prepare for {requested}");
         let _guard = LOCK.write().await;
 
-        let table = Self::locked_load(id)
-            .await
-            .map_err(|e| State(e.to_string()))?;
+        let table = Self::locked_load(id).await?;
         if table.is_some() {
-            bail!("table should not exist")
+            return Err(Error::Exists);
         }
 
         let Some(proposed) = NonZeroU64::new(bandwidth::alloc(requested)) else {
@@ -220,20 +235,17 @@ impl Table {
         Ok(Some(proposed))
     }
 
-    pub async fn commit(id: Uuid, data: TableData) -> Result<()> {
+    pub async fn commit(id: Uuid, data: TableData) -> Result<(), Error> {
         log::debug!("{id} commit");
         let _guard = LOCK.write().await;
 
-        let table = Self::locked_load(id)
-            .await
-            .map_err(|e| State(e.to_string()))?
-            .ok_or(NotPrepared)?;
+        let table = Self::locked_load(id).await?.ok_or(Error::NotPrepared)?;
 
         let TableStatus::Prepared {
             allocated: pre_bandwidth,
         } = table.status
         else {
-            return Err(Expired.into());
+            return Err(Error::Expired);
         };
 
         let post_bandwidth = data
@@ -243,7 +255,7 @@ impl Table {
             .map_or(0, NonZeroU64::get);
 
         if post_bandwidth > pre_bandwidth.get() {
-            return Err(TooMuchBandwidth.into());
+            return Err(Error::TooMuchBandwidth);
         }
         bandwidth::free(pre_bandwidth.get() - post_bandwidth);
 
@@ -257,7 +269,7 @@ impl Table {
         Ok(())
     }
 
-    pub async fn delete_if_prepared(id: Uuid) -> Result<Table> {
+    pub async fn delete_if_prepared(id: Uuid) -> Result<Table, Error> {
         log::debug!("{id} delete_if_prepared");
         let _guard = LOCK.write().await;
 
@@ -275,7 +287,7 @@ impl Table {
         Ok(table)
     }
 
-    pub async fn delete(id: Uuid) -> Result<()> {
+    pub async fn delete(id: Uuid) -> Result<(), Error> {
         log::debug!("{id} delete");
         let _guard = LOCK.write().await;
 
@@ -293,13 +305,13 @@ impl Table {
         Ok(())
     }
 
-    pub async fn save(&self) -> Result<()> {
+    pub async fn save(&self) -> Result<(), Error> {
         log::debug!("{} save", self.id);
         let _guard = LOCK.write().await;
 
         let current = Self::locked_load(self.id).await.ok().flatten();
         if current.as_ref().map_or(0, |t| t.status.age()) >= self.status.age() {
-            bail!("not a growing save");
+            return Err(Error::NotGrowing);
         }
 
         let pre_bandwidth = current.map_or(0, |t| t.status.local_bandwidth());
@@ -311,7 +323,7 @@ impl Table {
             let allocated = bandwidth::alloc(diff);
             if diff != allocated {
                 bandwidth::free(allocated);
-                bail!("insufficient bandwidth");
+                return Err(TooMuchBandwidth);
             };
         }
 
@@ -360,14 +372,6 @@ pub async fn init(cli: StateCli) {
     }
 }
 
-#[derive(thiserror::Error, Debug, Serialize, Deserialize, Clone)]
-pub enum Error {
-    #[error("table not found")]
-    TableNotFound,
-    #[error("store error")]
-    Store(#[from] store::Error),
-}
-
 async fn sched_wait(table: &Table) {
     let bandwidth = table.status.local_bandwidth() as u32;
 
@@ -394,7 +398,7 @@ pub async fn item_get(table_id: Uuid, key: &[u8]) -> Result<Option<Bytes>, Error
         .as_ref()
         .is_some_and(|t| matches!(t.status, TableStatus::Created(_)))
     {
-        return Err(Error::TableNotFound);
+        return Err(Error::NotFound);
     }
     sched_wait(table.as_ref().unwrap()).await;
     Ok(store::item_get(table_id, key).await?)
@@ -407,7 +411,7 @@ pub async fn item_set(table_id: Uuid, key: &[u8], value: &[u8]) -> Result<(), Er
         .as_ref()
         .is_some_and(|t| matches!(t.status, TableStatus::Created(_)))
     {
-        return Err(Error::TableNotFound);
+        return Err(Error::NotFound);
     }
     sched_wait(table.as_ref().unwrap()).await;
     Ok(store::item_set(table_id, key, value).await?)
@@ -417,7 +421,7 @@ pub async fn item_list(table_id: Uuid) -> Result<Vec<KeyValue>, Error> {
     // let _guard = LOCK.read().await;
     let table = Table::load(table_id).await.unwrap();
     if !table.is_some_and(|t| matches!(t.status, TableStatus::Created(_))) {
-        return Err(Error::TableNotFound);
+        return Err(Error::NotFound);
     }
     Ok(store::item_list(table_id).await?)
 }

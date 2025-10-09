@@ -1,7 +1,7 @@
 use crate::{
-    exec::{table::TableError::*, Operations, Rpc, Table, TableData, TableParams, TableStatus},
+    exec::{Operations, Rpc, Table, TableData, TableParams, TableStatus},
     peer::{self, availability_zone, local_index},
-    PREPARE_TIME,
+    state, PREPARE_TIME,
 };
 use anyhow::bail;
 use serde::{Deserialize, Serialize};
@@ -23,15 +23,9 @@ static PENDING: LazyLock<Mutex<BTreeMap<Uuid, JoinHandle<()>>>> =
 
 /// All table errors.
 #[derive(Error, Debug, Serialize, Deserialize)]
-pub enum TableError {
-    #[error("could not store table: {0}")]
-    State(String),
-    #[error("table was not prepared")]
-    NotPrepared,
-    #[error("expired table")]
-    Expired,
-    #[error("bandwidth error")]
-    TooMuchBandwidth,
+pub enum Error {
+    #[error("state error")]
+    State(#[from] state::Error),
 }
 
 /// Allocates a table with the given parameters and returns its ID.
@@ -148,7 +142,7 @@ pub struct TablePrepare {
 
 impl Rpc for TablePrepare {
     type Request = Operations;
-    type Response = Result<(String, u64), TableError>;
+    type Response = Result<(String, u64), Error>;
 
     /// The preparation RPC's main body.
     ///
@@ -157,11 +151,10 @@ impl Rpc for TablePrepare {
     ///
     /// Returns this peer availability zone and proposed bandwidth for this table.
     async fn handle(self) -> anyhow::Result<Self::Response> {
-        async fn inner(rpc: TablePrepare) -> Result<(String, u64), TableError> {
+        async fn inner(rpc: TablePrepare) -> Result<(String, u64), Error> {
             log::info!("{} prepare", rpc.id);
             let proposed = Table::prepare(rpc.id, rpc.request)
-                .await
-                .map_err(|e| State(e.to_string()))?
+                .await?
                 .map_or(0, NonZeroU64::get);
 
             PENDING.lock().await.insert(
@@ -195,17 +188,15 @@ pub struct TableCommit {
 
 impl Rpc for TableCommit {
     type Request = Operations;
-    type Response = Result<(), TableError>;
+    type Response = Result<(), Error>;
 
     /// The commit RPC's main body.
     ///
     /// Stores the table if it is compatible with what was proposed earlier.
     async fn handle(self) -> anyhow::Result<Self::Response> {
-        async fn inner(rpc: TableCommit) -> Result<(), TableError> {
+        async fn inner(rpc: TableCommit) -> Result<(), Error> {
             log::info!("{} commit", rpc.id);
-            Table::commit(rpc.id, rpc.table)
-                .await
-                .map_err(|e| State(e.to_string()))?;
+            Table::commit(rpc.id, rpc.table).await?;
 
             if let Some(task) = PENDING.lock().await.remove(&rpc.id) {
                 task.abort();
@@ -251,14 +242,12 @@ pub async fn table_delete(id: Uuid) -> anyhow::Result<()> {
 
 impl Rpc for TableDelete {
     type Request = Operations;
-    type Response = Result<(), TableError>;
+    type Response = Result<(), Error>;
 
     /// The delete RPC's main body.
     ///
     /// See [Table::delete] for more.
     async fn handle(self) -> anyhow::Result<Self::Response> {
-        Ok(Table::delete(self.id)
-            .await
-            .map_err(|e| State(e.to_string())))
+        Ok(Table::delete(self.id).await.map_err(Into::into))
     }
 }
