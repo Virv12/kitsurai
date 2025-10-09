@@ -28,7 +28,7 @@ pub async fn gossip(token: CancellationToken) -> Result<()> {
         if !peer.is_local() {
             log::debug!("Gossiping with {}", peer.addr);
             if let Err(err) = check_sync(peer, merkle::Path::root()).await {
-                log::error!("Gossiping with {} failed: {}", peer.addr, err);
+                log::warn!("Gossiping with {} failed: {}", peer.addr, err);
             }
         }
     }
