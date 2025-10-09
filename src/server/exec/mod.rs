@@ -102,7 +102,7 @@ impl Operations {
                     .serve_connection(io, service_fn(recv))
                     .await
                 {
-                    eprintln!("Error serving connection: {:?}", err);
+                    log::warn!("Error serving connection: {:?}", err);
                 }
             });
         }
@@ -150,7 +150,7 @@ async fn get_conn(peer: &str) -> Result<SendRequest<Full<Bytes>>> {
         // Spawn the connection driver (handles incoming frames)
         tokio::spawn(async move {
             if let Err(err) = connection.await {
-                eprintln!("Connection error: {:?}", err);
+                log::warn!("Connection error: {:?}", err);
             }
         });
 

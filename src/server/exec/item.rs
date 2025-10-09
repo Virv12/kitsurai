@@ -41,13 +41,13 @@ pub async fn item_get(id: Uuid, key: Bytes) -> Result<Vec<Option<Bytes>>> {
                 results.push(res);
             }
             (Peer { addr, .. }, Ok(Ok(Err(store_error)))) => {
-                eprintln!("GET: store error on {addr}, {store_error}")
+                log::error!("GET: store error on {addr}, {store_error}")
             }
             (Peer { addr, .. }, Ok(Err(rpc_error))) => {
-                eprintln!("GET: rpc error on {addr}, {rpc_error}")
+                log::error!("GET: rpc error on {addr}, {rpc_error}")
             }
             (Peer { addr, .. }, Err(timeout_error)) => {
-                eprintln!("GET: timeout error on {addr}, {timeout_error}")
+                log::error!("GET: timeout error on {addr}, {timeout_error}")
             }
         }
 
@@ -88,13 +88,13 @@ pub async fn item_set(id: Uuid, key: Bytes, value: Bytes) -> Result<()> {
         match res.expect("Join error") {
             (_, Ok(Ok(Ok(())))) => successes += 1,
             (Peer { addr, .. }, Ok(Ok(Err(store_error)))) => {
-                eprintln!("GET: store error on {addr}, {store_error}")
+                log::error!("SET: store error on {addr}, {store_error}")
             }
             (Peer { addr, .. }, Ok(Err(rpc_error))) => {
-                eprintln!("GET: rpc error on {addr}, {rpc_error}")
+                log::error!("SET: rpc error on {addr}, {rpc_error}")
             }
             (Peer { addr, .. }, Err(timeout_error)) => {
-                eprintln!("GET: timeout error on {addr}, {timeout_error}")
+                log::error!("SET: timeout error on {addr}, {timeout_error}")
             }
         }
 
