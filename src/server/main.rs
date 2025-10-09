@@ -78,7 +78,7 @@ fn logger_init(rpc_addr: String) {
 
             writeln!(
                 buf,
-                "{s_addr}{rpc_addr}{s_addr:#} {s_lvl}{lvl:5}{s_lvl:#} {s_tgt}{tgt:17}{s_tgt:#} | {args}"
+                "{s_addr}{rpc_addr}{s_addr:#} {s_lvl}{lvl:5}{s_lvl:#} {s_tgt}{tgt:21}{s_tgt:#} | {args}"
             )
         })
         .init();

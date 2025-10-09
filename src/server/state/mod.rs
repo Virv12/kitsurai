@@ -1,19 +1,22 @@
 //! Handles table metadata, exposing methods to load, save and list metadata.
 
+mod bandwidth;
 mod store;
 
+use crate::exec::table::TableError::{Expired, NotPrepared, State, TooMuchBandwidth};
 use crate::{
     merkle::{self, Merkle},
     peer::{self, local_index, Peer},
 };
-use anyhow::Result;
+use anyhow::{bail, Result};
 use bytes::Bytes;
 use clap::Parser;
 use serde::{Deserialize, Serialize};
+use std::num::NonZeroU64;
 use std::sync::RwLock as StdRwLock;
 use std::{
     collections::BTreeMap,
-    sync::atomic::{AtomicI64, AtomicU64, Ordering},
+    sync::atomic::{AtomicU64, Ordering},
 };
 use std::{collections::HashMap, sync::LazyLock};
 use store::KeyValue;
@@ -29,7 +32,7 @@ const META: Uuid = Uuid::new_v8(*b"kitsuraimetadata");
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TableStatus {
-    Prepared { allocated: u64 },
+    Prepared { allocated: NonZeroU64 },
     Created(TableData),
     Deleted,
 }
@@ -40,6 +43,17 @@ impl TableStatus {
             TableStatus::Prepared { .. } => 1,
             TableStatus::Created(_) => 2,
             TableStatus::Deleted => 3,
+        }
+    }
+
+    fn local_bandwidth(&self) -> u64 {
+        match self {
+            &TableStatus::Prepared { allocated } => allocated.get(),
+            TableStatus::Created(TableData { allocation, .. }) => allocation
+                .get(&(local_index() as u64))
+                .copied()
+                .map_or(0, NonZeroU64::get),
+            TableStatus::Deleted => 0,
         }
     }
 }
@@ -54,7 +68,7 @@ pub struct TableParams {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct TableData {
-    pub allocation: BTreeMap<u64, u64>,
+    pub allocation: BTreeMap<u64, NonZeroU64>,
     pub params: TableParams,
 }
 
@@ -67,7 +81,7 @@ impl TableData {
             .allocation
             .iter()
             .scan(0, |acc, (&k, &v)| {
-                *acc += v;
+                *acc += v.get();
                 Some((k, *acc))
             })
             .find(|&(_, acc)| acc > ord)
@@ -105,8 +119,26 @@ pub struct Table {
 }
 
 impl Table {
-    pub async fn load(id: Uuid) -> Result<Option<Self>> {
+    pub async fn list() -> Result<Vec<Self>> {
+        let _guard = LOCK.read().await;
+
+        log::debug!("list");
+        let tables = store::item_list(META)
+            .await?
+            .into_iter()
+            .map(|(key, value)| Self {
+                id: Uuid::from_slice(&key).expect("id deserialization failed"),
+                status: postcard::from_bytes(value.as_ref()).expect("table deserialization failed"),
+            })
+            .collect();
+
+        Ok(tables)
+    }
+
+    async fn locked_load(id: Uuid) -> Result<Option<Self>> {
         log::debug!("{id} load");
+        assert!(LOCK.try_write().is_err());
+
         {
             let cache = TABLE_CACHE.read().expect("poisoned");
             if cache.id == id {
@@ -126,13 +158,18 @@ impl Table {
         Ok(table)
     }
 
-    async fn save_inner(&self) -> Result<Option<Table>> {
-        let old = Table::load(self.id).await?;
-        {
-            *TABLE_CACHE.write().expect("poisoned") = self.clone();
-        }
+    pub async fn load(id: Uuid) -> Result<Option<Self>> {
+        let _guard = LOCK.read().await;
+        Self::locked_load(id).await
+    }
+
+    async fn locked_save(&self) -> Result<()> {
+        log::debug!("{} save", self.id);
+        assert!(LOCK.try_read().is_err());
+
         let blob = postcard::to_allocvec(&self.status)?;
         store::item_set(META, self.id.as_bytes(), &blob).await?;
+
         match &self.status {
             TableStatus::Prepared { .. } => {}
             TableStatus::Created(_) => {
@@ -145,79 +182,141 @@ impl Table {
             TableStatus::Deleted => {
                 MERKLE.lock().await.insert(self.id.to_u128_le(), &blob);
                 SCHED_AVAIL_AT.write().expect("poisoned").remove(&self.id);
-                // TODO: Check again someday.
             }
         }
-        Ok(old)
-    }
 
-    pub async fn list() -> Result<Vec<Self>> {
-        log::debug!("list");
-        let tables = store::item_list(META)
-            .await?
-            .into_iter()
-            .map(|(key, value)| Self {
-                id: Uuid::from_slice(&key).expect("id deserialization failed"),
-                status: postcard::from_bytes(value.as_ref()).expect("table deserialization failed"),
-            })
-            .collect();
-
-        Ok(tables)
-    }
-
-    pub async fn save(&self) -> Result<Option<Table>> {
-        log::debug!("{} save", self.id);
-        let _guard = LOCK.write().await;
-        self.save_inner().await
-    }
-
-    pub async fn growing_save(&self) -> Result<Option<Table>> {
-        log::debug!("{} checked_save", self.id);
-        let _guard = LOCK.write().await;
-        let old = Table::load(self.id).await?;
-        if old.as_ref().map_or(0, |o| o.status.age()) >= self.status.age() {
-            return Ok(old);
+        // Update cache.
+        {
+            *TABLE_CACHE.write().expect("poisoned") = self.clone();
         }
-        self.save_inner().await
+
+        Ok(())
     }
 
-    pub async fn delete_if_prepared(id: Uuid) -> Result<()> {
+    pub async fn prepare(id: Uuid, requested: u64) -> Result<Option<NonZeroU64>> {
+        log::debug!("{id} prepare for {requested}");
+        let _guard = LOCK.write().await;
+
+        let table = Self::locked_load(id)
+            .await
+            .map_err(|e| State(e.to_string()))?;
+        if table.is_some() {
+            bail!("table should not exist")
+        }
+
+        let Some(proposed) = NonZeroU64::new(bandwidth::alloc(requested)) else {
+            return Ok(None);
+        };
+
+        Table {
+            id,
+            status: TableStatus::Prepared {
+                allocated: proposed,
+            },
+        }
+        .locked_save()
+        .await?;
+
+        Ok(Some(proposed))
+    }
+
+    pub async fn commit(id: Uuid, data: TableData) -> Result<()> {
+        log::debug!("{id} commit");
+        let _guard = LOCK.write().await;
+
+        let table = Self::locked_load(id)
+            .await
+            .map_err(|e| State(e.to_string()))?
+            .ok_or(NotPrepared)?;
+
+        let TableStatus::Prepared {
+            allocated: pre_bandwidth,
+        } = table.status
+        else {
+            return Err(Expired.into());
+        };
+
+        let post_bandwidth = data
+            .allocation
+            .get(&(local_index() as u64))
+            .copied()
+            .map_or(0, NonZeroU64::get);
+
+        if post_bandwidth > pre_bandwidth.get() {
+            return Err(TooMuchBandwidth.into());
+        }
+        bandwidth::free(pre_bandwidth.get() - post_bandwidth);
+
+        Table {
+            id,
+            status: TableStatus::Created(data),
+        }
+        .locked_save()
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn delete_if_prepared(id: Uuid) -> Result<Table> {
         log::debug!("{id} delete_if_prepared");
         let _guard = LOCK.write().await;
-        let mut table = Table::load(id)
+
+        let mut table = Self::locked_load(id)
             .await
             .ok()
             .flatten()
             .expect("table should exists");
+
         if let TableStatus::Prepared { allocated } = table.status {
             table.status = TableStatus::Deleted;
-            table.save_inner().await?;
-            bandwidth_free(allocated);
+            table.locked_save().await?;
+            bandwidth::free(allocated.get());
         }
-        Ok(())
+        Ok(table)
     }
 
     pub async fn delete(id: Uuid) -> Result<()> {
         log::debug!("{id} delete");
         let _guard = LOCK.write().await;
-        let mut table = Table::load(id)
+
+        let mut table = Self::locked_load(id)
             .await
             .ok()
             .flatten()
             .expect("table should exists");
-        let allocated = match table.status {
-            TableStatus::Prepared { allocated } => allocated,
-            TableStatus::Created(ref data) => data
-                .allocation
-                .get(&(local_index() as u64))
-                .copied()
-                .unwrap_or(0),
-            _ => 0,
-        };
+
+        let allocated = table.status.local_bandwidth();
         table.status = TableStatus::Deleted;
-        table.save_inner().await?;
-        bandwidth_free(allocated);
+        table.locked_save().await?;
+        bandwidth::free(allocated);
         store::table_delete(id).await?;
+        Ok(())
+    }
+
+    pub async fn save(&self) -> Result<()> {
+        log::debug!("{} save", self.id);
+        let _guard = LOCK.write().await;
+
+        let current = Self::locked_load(self.id).await.ok().flatten();
+        if current.as_ref().map_or(0, |t| t.status.age()) >= self.status.age() {
+            bail!("not a growing save");
+        }
+
+        let pre_bandwidth = current.map_or(0, |t| t.status.local_bandwidth());
+        let post_bandwidth = self.status.local_bandwidth();
+        if pre_bandwidth > post_bandwidth {
+            bandwidth::free(pre_bandwidth - post_bandwidth);
+        } else {
+            let diff = post_bandwidth - pre_bandwidth;
+            let allocated = bandwidth::alloc(diff);
+            if diff != allocated {
+                bandwidth::free(allocated);
+                bail!("insufficient bandwidth");
+            };
+        }
+
+        self.locked_save().await?;
+
         Ok(())
     }
 }
@@ -235,44 +334,28 @@ pub struct StateCli {
 }
 
 pub async fn init(cli: StateCli) {
-    // Initialize the store backend.
-    store::init(cli.store_cli);
-
     log::info!("Initialize state");
-
-    // Set the initial bandwidth as given by configuration.
-    BANDWIDTH.store(cli.bandwidth as i64, Ordering::Relaxed);
+    store::init(cli.store_cli);
+    bandwidth::init(cli.bandwidth);
 
     LazyLock::force(&SCHED_BASE_TIME);
 
     let mut merkle = MERKLE.lock().await;
 
-    for mut table in Table::list().await.expect("could not get table list") {
-        match table.status {
-            TableStatus::Prepared { .. } => {
-                table.status = TableStatus::Deleted;
-                table.save().await.expect("failed to prepared table");
-            }
-            TableStatus::Created(ref data) => {
-                if let Some(&allocated) = data.allocation.get(&(local_index() as u64)) {
-                    let prev = BANDWIDTH.fetch_sub(allocated as i64, Ordering::Relaxed);
-                    if prev - (allocated as i64) < 0 {
-                        panic!(
-                            "Overflowed bandwidth on initialization. Database may be corrupted?"
-                        );
-                    }
-                }
+    for table in Table::list().await.expect("could not get table list") {
+        let table = Table::delete_if_prepared(table.id).await.unwrap();
 
-                let data = postcard::to_allocvec(&table.status).unwrap();
-                merkle.insert(table.id.to_u128_le(), &data);
+        let requested = table.status.local_bandwidth();
+        if bandwidth::alloc(requested) != requested {
+            panic!("Overflowed bandwidth on initialization. Database may be corrupted?");
+        }
 
-                let mut available = SCHED_AVAIL_AT.write().expect("poisoned");
-                available.insert(table.id, AtomicU64::new(0));
-            }
-            TableStatus::Deleted => {
-                let data = postcard::to_allocvec(&table.status).unwrap();
-                merkle.insert(table.id.to_u128_le(), &data);
-            }
+        let data = postcard::to_allocvec(&table.status).unwrap();
+        merkle.insert(table.id.to_u128_le(), &data);
+
+        if matches!(table.status, TableStatus::Created(_)) {
+            let mut available = SCHED_AVAIL_AT.write().expect("poisoned");
+            available.insert(table.id, AtomicU64::new(0));
         }
     }
 }
@@ -286,14 +369,7 @@ pub enum Error {
 }
 
 async fn sched_wait(table: &Table) {
-    let bandwidth = match &table.status {
-        TableStatus::Created(data) => data
-            .allocation
-            .get(&(local_index() as u64))
-            .copied()
-            .expect("table should be allocated") as u32,
-        _ => panic!("table must be created to wait for scheduler"),
-    };
+    let bandwidth = table.status.local_bandwidth() as u32;
 
     let instant = {
         let available = SCHED_AVAIL_AT.read().expect("poisoned");
@@ -348,26 +424,4 @@ pub async fn item_list(table_id: Uuid) -> Result<Vec<KeyValue>, Error> {
 
 pub async fn merkle_find(path: merkle::Path) -> Option<(merkle::Path, u128)> {
     MERKLE.lock().await.find(path)
-}
-
-/// Holds the current available _"bandwidth"_.
-///
-/// Strictly speaking it has no unit and its value can be set semi-arbitrarily.<br>
-/// In practice the unit chosen is the smallest amount that can be allocated by a table.
-static BANDWIDTH: AtomicI64 = AtomicI64::new(0);
-
-/// Allocates _"bandwidth"_ for a table.
-///
-/// May return less than requested if there is not enough available.
-pub fn bandwidth_alloc(request: u64) -> u64 {
-    let request = request as i64;
-    let available = BANDWIDTH.fetch_sub(request, Ordering::Relaxed);
-    let proposed = available.min(request).max(0);
-    BANDWIDTH.fetch_add(request - proposed, Ordering::Relaxed);
-    proposed as u64
-}
-
-/// Frees _"bandwidth"_ previously allocated by a table.
-pub fn bandwidth_free(allocated: u64) {
-    BANDWIDTH.fetch_add(allocated as i64, Ordering::Relaxed);
 }

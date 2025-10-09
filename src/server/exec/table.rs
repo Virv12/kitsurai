@@ -1,10 +1,11 @@
 use crate::{
     exec::{table::TableError::*, Operations, Rpc, Table, TableData, TableParams, TableStatus},
     peer::{self, availability_zone, local_index},
-    state, PREPARE_TIME,
+    PREPARE_TIME,
 };
 use anyhow::bail;
 use serde::{Deserialize, Serialize};
+use std::num::NonZeroU64;
 use std::{collections::BTreeMap, sync::LazyLock};
 use thiserror::Error;
 use tokio::{
@@ -24,7 +25,7 @@ static PENDING: LazyLock<Mutex<BTreeMap<Uuid, JoinHandle<()>>>> =
 #[derive(Error, Debug, Serialize, Deserialize)]
 pub enum TableError {
     #[error("could not store table: {0}")]
-    Store(String),
+    State(String),
     #[error("table was not prepared")]
     NotPrepared,
     #[error("expired table")]
@@ -97,7 +98,10 @@ pub async fn table_create(
     }
 
     let data = TableData {
-        allocation: allocation_peer.iter().map(|((_, p), b)| (*p, *b)).collect(),
+        allocation: allocation_peer
+            .iter()
+            .filter_map(|(&(_, p), &b)| NonZeroU64::new(b).map(|x| (p, x)))
+            .collect(),
         params,
     };
 
@@ -155,17 +159,10 @@ impl Rpc for TablePrepare {
     async fn handle(self) -> anyhow::Result<Self::Response> {
         async fn inner(rpc: TablePrepare) -> Result<(String, u64), TableError> {
             log::info!("{} prepare", rpc.id);
-            let proposed = state::bandwidth_alloc(rpc.request);
-
-            Table {
-                id: rpc.id,
-                status: TableStatus::Prepared {
-                    allocated: proposed,
-                },
-            }
-            .save()
-            .await
-            .map_err(|e| Store(e.to_string()))?;
+            let proposed = Table::prepare(rpc.id, rpc.request)
+                .await
+                .map_err(|e| State(e.to_string()))?
+                .map_or(0, NonZeroU64::get);
 
             PENDING.lock().await.insert(
                 rpc.id,
@@ -206,36 +203,9 @@ impl Rpc for TableCommit {
     async fn handle(self) -> anyhow::Result<Self::Response> {
         async fn inner(rpc: TableCommit) -> Result<(), TableError> {
             log::info!("{} commit", rpc.id);
-            let table = Table::load(rpc.id)
+            Table::commit(rpc.id, rpc.table)
                 .await
-                .map_err(|e| Store(e.to_string()))?
-                .ok_or(NotPrepared)?;
-
-            let TableStatus::Prepared { allocated } = table.status else {
-                return Err(Expired);
-            };
-
-            let pre_bandwidth = allocated;
-            let post_bandwidth = rpc
-                .table
-                .allocation
-                .get(&(local_index() as u64))
-                .copied()
-                .unwrap_or(0);
-
-            if post_bandwidth > pre_bandwidth {
-                return Err(TooMuchBandwidth);
-            }
-
-            state::bandwidth_free(pre_bandwidth - post_bandwidth);
-
-            Table {
-                id: rpc.id,
-                status: TableStatus::Created(rpc.table),
-            }
-            .save()
-            .await
-            .map_err(|e| Store(e.to_string()))?;
+                .map_err(|e| State(e.to_string()))?;
 
             if let Some(task) = PENDING.lock().await.remove(&rpc.id) {
                 task.abort();
@@ -289,6 +259,6 @@ impl Rpc for TableDelete {
     async fn handle(self) -> anyhow::Result<Self::Response> {
         Ok(Table::delete(self.id)
             .await
-            .map_err(|e| Store(e.to_string())))
+            .map_err(|e| State(e.to_string())))
     }
 }
