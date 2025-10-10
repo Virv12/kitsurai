@@ -44,7 +44,13 @@ pub async fn table_create(
     b *= n;
     for (index, peer) in peer::peers().iter().enumerate() {
         let rpc = TablePrepare { id, request: b / n };
-        let (zone, available) = rpc.exec(peer).await??;
+        let (zone, available) = match rpc.exec(peer).await {
+            Ok(ret) => ret?,
+            Err(e) => {
+                log::warn!("{e}");
+                continue;
+            }
+        };
         log::debug!("{id} {zone} @ {} proposed {available}", peer.addr);
 
         let zone_remaining = (b / n).saturating_sub(*allocation_zone.get(&zone).unwrap_or(&0));
