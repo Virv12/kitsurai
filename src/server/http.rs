@@ -163,9 +163,9 @@ async fn item_list(Path(table): Path<Uuid>) -> (StatusCode, Vec<u8>) {
 
         let data: Vec<_> = data
             .into_iter()
-            .map(|(peer, keyvalue)| {
-                let keyvalue: BTreeMap<_, _> = keyvalue.into_iter().collect();
-                (peer, keyvalue)
+            .map(|(peer, kv)| {
+                let kv: BTreeMap<_, _> = kv.into_iter().collect();
+                (peer, kv)
             })
             .collect();
 
@@ -176,18 +176,18 @@ async fn item_list(Path(table): Path<Uuid>) -> (StatusCode, Vec<u8>) {
         writeln!(out)?;
 
         for key in keys {
-            write!(out, "{key:?}")?;
-            for (_, keyvalue) in &data {
-                write!(out, "$")?;
-                if let Some(value) = keyvalue.get(&key) {
-                    write!(out, "{value:?}")?;
+            write!(out, "{:?}", String::from_utf8_lossy(&key))?;
+            for (_, kv) in &data {
+                write!(out, " $ ")?;
+                if let Some(value) = kv.get(&key) {
+                    write!(out, "{:?}", value.len())?;
                 }
             }
             writeln!(out)?;
         }
 
-        for (_, keyvalue) in &data {
-            write!(out, "${}", keyvalue.len())?;
+        for (_, kv) in &data {
+            write!(out, " $ {}", kv.len())?;
         }
         writeln!(out)?;
 

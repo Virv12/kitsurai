@@ -1,12 +1,13 @@
 use crate::{
     exec::{Operations, Rpc, Table, TableData, TableParams, TableStatus},
     peer::{self, availability_zone, local_index},
-    state, PREPARE_TIME,
+    state, PREPARE_TIME, TIMEOUT,
 };
 use anyhow::bail;
 use serde::{Deserialize, Serialize};
 use std::num::NonZeroU64;
 use std::{collections::BTreeMap, sync::LazyLock};
+use tokio::time::timeout;
 use tokio::{
     sync::Mutex,
     task::{JoinHandle, JoinSet},
@@ -43,8 +44,12 @@ pub async fn table_create(
     b *= n;
     for (index, peer) in peer::peers().iter().enumerate() {
         let rpc = TablePrepare { id, request: b / n };
-        let (zone, available) = match rpc.exec(peer).await {
-            Ok(ret) => ret?,
+        let (zone, available) = match timeout(TIMEOUT, rpc.exec(peer)).await {
+            Ok(Ok(ret)) => ret?,
+            Ok(Err(e)) => {
+                log::warn!("{e}");
+                continue;
+            }
             Err(e) => {
                 log::warn!("{e}");
                 continue;
@@ -111,7 +116,7 @@ pub async fn table_create(
             table: data.clone(),
         };
         let peer = &peer::peers()[index as usize];
-        set.spawn(rpc.exec(peer));
+        set.spawn(timeout(TIMEOUT, rpc.exec(peer)));
     }
     let results = set.join_all().await;
     log::debug!("commit results {results:?}");

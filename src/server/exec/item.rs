@@ -1,6 +1,5 @@
 use crate::{
     exec::{keep_peer, Operations, Peer, Rpc},
-    peer,
     state::{self, Table, TableStatus},
     TIMEOUT,
 };
@@ -114,12 +113,17 @@ pub async fn item_set(id: Uuid, key: Bytes, value: Bytes) -> Result<()> {
 ///
 /// Returns a list of (address, key-value list).
 /// Executes [ItemList].
-pub async fn item_list(table: Uuid) -> Result<Vec<(String, Vec<(Vec<u8>, Vec<u8>)>)>> {
+pub async fn item_list(table_id: Uuid) -> Result<Vec<(String, Vec<(Vec<u8>, Vec<u8>)>)>> {
+    let table = Table::load(table_id).await?.context("table not found")?;
+    let TableStatus::Created(table) = table.status else {
+        bail!("table is not created")
+    };
+
     let mut set = JoinSet::new();
-    for peer in peer::peers() {
+    for peer in table.peers() {
         set.spawn(keep_peer(
             peer,
-            timeout(TIMEOUT, ItemList { table }.exec(peer)),
+            timeout(TIMEOUT, ItemList { table: table_id }.exec(peer)),
         ));
     }
 

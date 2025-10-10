@@ -90,6 +90,10 @@ impl TableData {
         &peer::peers()[index as usize]
     }
 
+    pub fn peers(&self) -> impl Iterator<Item = &'static Peer> + use<'_> {
+        self.allocation.keys().map(|&x| &peer::peers()[x as usize])
+    }
+
     /// Return an iterator over the peers that are responsible for the given key.
     pub fn peers_for_key(&self, key: &[u8]) -> impl Iterator<Item = &'static Peer> + use<'_> {
         let hash = xxh3_64(key);

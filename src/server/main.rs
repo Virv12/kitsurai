@@ -16,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 /// Any RPC with that does not respond completely within this specified time
 ///  will be counted as a failure.
 ///
-/// Defaults to 1 second.
+/// Defaults to 10 second.
 const TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Time that a stored table can remain in the [Prepared](state::TableStatus::Prepared) state.
