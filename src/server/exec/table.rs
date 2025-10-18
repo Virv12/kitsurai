@@ -39,7 +39,7 @@ pub async fn table_create(
     log::info!("{id} creating with b={b}, n={n}, r={r}, w={w}");
 
     let mut allocation_zone = BTreeMap::new();
-    let mut allocation_peer = BTreeMap::new();
+    let mut allocation_peer = Vec::new();
     let mut allocated = 0;
     b *= n;
     for (index, peer) in peer::peers().iter().enumerate() {
@@ -71,7 +71,7 @@ pub async fn table_create(
             .entry(zone.clone())
             .and_modify(|v| *v += available)
             .or_insert(available);
-        allocation_peer.insert((zone, index as u64), available);
+        allocation_peer.push((zone, index as u64, available));
         allocated += available;
         log::debug!("{id} allocated {allocated}/{b}");
 
@@ -86,7 +86,7 @@ pub async fn table_create(
     );
 
     if allocated < b {
-        for (_, index) in allocation_peer.keys() {
+        for (_, index, _) in allocation_peer.iter() {
             let rpc = TableDelete { id };
             let peer = &peer::peers()[*index as usize];
             tokio::spawn(rpc.exec(peer));
@@ -94,42 +94,49 @@ pub async fn table_create(
         bail!("Could not allocate enough bandwidth.");
     }
 
-    for x in allocation_peer.values_mut() {
+    for (_, _, x) in allocation_peer.iter_mut() {
         let y = *x * b / allocated;
         b -= y;
         allocated -= *x;
         *x = y;
     }
 
+    allocation_peer.sort_by_cached_key(|(z, _, _)| {
+        let x = allocation_zone.get(z).unwrap();
+        (x, z.clone())
+    });
+
     let data = TableData {
         allocation: allocation_peer
             .iter()
-            .filter_map(|(&(_, p), &b)| NonZeroU64::new(b).map(|x| (p, x)))
+            .filter_map(|&(_, p, b)| NonZeroU64::new(b).map(|x| (p, x)))
             .collect(),
         params,
     };
 
     let mut set = JoinSet::new();
-    for &index in data.allocation.keys() {
+    for peer in data.peers() {
         let rpc = TableCommit {
             id,
             table: data.clone(),
         };
-        let peer = &peer::peers()[index as usize];
         set.spawn(timeout(TIMEOUT, rpc.exec(peer)));
     }
     let results = set.join_all().await;
     log::debug!("commit results {results:?}");
     if results.iter().flatten().any(Result::is_err) {
-        for &index in data.allocation.keys() {
+        for peer in data.peers() {
             let rpc = TableDelete { id };
-            let peer = &peer::peers()[index as usize];
             tokio::spawn(rpc.exec(peer));
         }
         bail!("could not commit table");
     }
 
-    if !data.allocation.contains_key(&(local_index() as u64)) {
+    if !data
+        .allocation
+        .iter()
+        .any(|&(k, _)| k == local_index() as u64)
+    {
         Table {
             id,
             status: TableStatus::Created(data),
@@ -239,9 +246,9 @@ pub async fn table_delete(id: Uuid) -> anyhow::Result<()> {
     };
 
     let mut set = JoinSet::new();
-    for &peer_id in data.allocation.keys() {
+    for peer in data.peers() {
         let rpc = TableDelete { id };
-        set.spawn(rpc.exec(&peer::peers()[peer_id as usize]));
+        set.spawn(rpc.exec(peer));
     }
     // TODO: we don't really care here.
     set.join_all().await;

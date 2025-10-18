@@ -12,11 +12,8 @@ use bytes::Bytes;
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 use std::num::NonZeroU64;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::RwLock as StdRwLock;
-use std::{
-    collections::BTreeMap,
-    sync::atomic::{AtomicU64, Ordering},
-};
 use std::{collections::HashMap, sync::LazyLock};
 use store::KeyValue;
 use tokio::{
@@ -49,9 +46,10 @@ impl TableStatus {
         match self {
             &TableStatus::Prepared { allocated } => allocated.get(),
             TableStatus::Created(TableData { allocation, .. }) => allocation
-                .get(&(local_index() as u64))
-                .copied()
-                .map_or(0, NonZeroU64::get),
+                .iter()
+                .find(|&&(k, _)| k == local_index() as u64)
+                .map(|&(_, v)| v.get())
+                .unwrap_or(0),
             TableStatus::Deleted => 0,
         }
     }
@@ -67,7 +65,7 @@ pub struct TableParams {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct TableData {
-    pub allocation: BTreeMap<u64, NonZeroU64>,
+    pub allocation: Vec<(u64, NonZeroU64)>,
     pub params: TableParams,
 }
 
@@ -79,7 +77,7 @@ impl TableData {
         let index = self
             .allocation
             .iter()
-            .scan(0, |acc, (&k, &v)| {
+            .scan(0, |acc, &(k, v)| {
                 *acc += v.get();
                 Some((k, *acc))
             })
@@ -90,12 +88,14 @@ impl TableData {
         &peer::peers()[index as usize]
     }
 
-    pub fn peers(&self) -> impl Iterator<Item = &'static Peer> + use<'_> {
-        self.allocation.keys().map(|&x| &peer::peers()[x as usize])
+    pub fn peers(&self) -> impl Iterator<Item = &'static Peer> + '_ {
+        self.allocation
+            .iter()
+            .map(|&(k, _)| &peer::peers()[k as usize])
     }
 
     /// Return an iterator over the peers that are responsible for the given key.
-    pub fn peers_for_key(&self, key: &[u8]) -> impl Iterator<Item = &'static Peer> + use<'_> {
+    pub fn peers_for_key(&self, key: &[u8]) -> impl Iterator<Item = &'static Peer> + '_ {
         let hash = xxh3_64(key);
         let TableParams { b, n, .. } = self.params;
         let virt = ((hash as u128 * (b * n) as u128) >> 64) as u64;
@@ -254,9 +254,10 @@ impl Table {
 
         let post_bandwidth = data
             .allocation
-            .get(&(local_index() as u64))
-            .copied()
-            .map_or(0, NonZeroU64::get);
+            .iter()
+            .find(|&&(k, _)| k == local_index() as u64)
+            .map(|&(_, v)| v.get())
+            .unwrap_or(0);
 
         if post_bandwidth > pre_bandwidth.get() {
             return Err(Error::TooMuchBandwidth);
@@ -344,7 +345,7 @@ pub struct StateCli {
     store_cli: store::StoreCli,
 
     /// Available _"bandwidth"_ for this peer.
-    /// See [BANDWIDTH] for more details.
+    /// See [bandwidth] for more details.
     #[arg(short, long, default_value = "100")]
     bandwidth: u64,
 }
