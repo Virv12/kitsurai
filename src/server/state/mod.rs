@@ -34,14 +34,6 @@ pub enum TableStatus {
 }
 
 impl TableStatus {
-    fn age(&self) -> usize {
-        match self {
-            TableStatus::Prepared { .. } => 1,
-            TableStatus::Created(_) => 2,
-            TableStatus::Deleted => 3,
-        }
-    }
-
     fn local_bandwidth(&self) -> u64 {
         match self {
             &TableStatus::Prepared { allocated } => allocated.get(),
@@ -315,7 +307,22 @@ impl Table {
         let _guard = LOCK.write().await;
 
         let current = Self::locked_load(self.id).await.ok().flatten();
-        if current.as_ref().map_or(0, |t| t.status.age()) >= self.status.age() {
+
+        let growing = match (current.as_ref().map(|t| &t.status), &self.status) {
+            (None, TableStatus::Prepared { .. }) => true,
+            (None, TableStatus::Created(_)) => true,
+            (None, TableStatus::Deleted) => true,
+            (Some(TableStatus::Prepared { .. }), TableStatus::Prepared { .. }) => false,
+            (Some(TableStatus::Prepared { .. }), TableStatus::Created(_)) => false,
+            (Some(TableStatus::Prepared { .. }), TableStatus::Deleted) => true,
+            (Some(TableStatus::Created(_)), TableStatus::Prepared { .. }) => false,
+            (Some(TableStatus::Created(_)), TableStatus::Created(_)) => false,
+            (Some(TableStatus::Created(_)), TableStatus::Deleted) => true,
+            (Some(TableStatus::Deleted), TableStatus::Prepared { .. }) => false,
+            (Some(TableStatus::Deleted), TableStatus::Created(_)) => false,
+            (Some(TableStatus::Deleted), TableStatus::Deleted) => false,
+        };
+        if !growing {
             return Err(Error::NotGrowing);
         }
 
