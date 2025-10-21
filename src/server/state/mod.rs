@@ -125,8 +125,8 @@ pub enum Error {
     Expired,
     #[error("bandwidth error")]
     TooMuchBandwidth,
-    #[error("not a growing save")]
-    NotGrowing,
+    #[error("not a growing save: {0}")]
+    NotGrowing(String),
     #[error("store error")]
     Store(#[from] store::Error),
 }
@@ -308,23 +308,34 @@ impl Table {
 
         let current = Self::locked_load(self.id).await.ok().flatten();
 
-        let growing = match (current.as_ref().map(|t| &t.status), &self.status) {
-            (None, TableStatus::Prepared { .. }) => true,
-            (None, TableStatus::Created(_)) => true,
-            (None, TableStatus::Deleted) => true,
-            (Some(TableStatus::Prepared { .. }), TableStatus::Prepared { .. }) => false,
-            (Some(TableStatus::Prepared { .. }), TableStatus::Created(_)) => false,
-            (Some(TableStatus::Prepared { .. }), TableStatus::Deleted) => true,
-            (Some(TableStatus::Created(_)), TableStatus::Prepared { .. }) => false,
-            (Some(TableStatus::Created(_)), TableStatus::Created(_)) => false,
-            (Some(TableStatus::Created(_)), TableStatus::Deleted) => true,
-            (Some(TableStatus::Deleted), TableStatus::Prepared { .. }) => false,
-            (Some(TableStatus::Deleted), TableStatus::Created(_)) => false,
-            (Some(TableStatus::Deleted), TableStatus::Deleted) => false,
-        };
-        if !growing {
-            return Err(Error::NotGrowing);
-        }
+        match (current.as_ref().map(|t| &t.status), &self.status) {
+            (None, TableStatus::Prepared { .. }) => Ok(()),
+            (None, TableStatus::Created(_)) => Ok(()),
+            (None, TableStatus::Deleted) => Ok(()),
+            (Some(TableStatus::Prepared { .. }), TableStatus::Prepared { .. }) => {
+                Err(Error::NotGrowing("prepare = prepare".into()))
+            }
+            (Some(TableStatus::Prepared { .. }), TableStatus::Created(_)) => {
+                Err(Error::NotGrowing("prepare > created".into()))
+            }
+            (Some(TableStatus::Prepared { .. }), TableStatus::Deleted) => Ok(()),
+            (Some(TableStatus::Created(_)), TableStatus::Prepared { .. }) => {
+                Err(Error::NotGrowing("created > prepare".into()))
+            }
+            (Some(TableStatus::Created(_)), TableStatus::Created(_)) => {
+                Err(Error::NotGrowing("created = created".into()))
+            }
+            (Some(TableStatus::Created(_)), TableStatus::Deleted) => Ok(()),
+            (Some(TableStatus::Deleted), TableStatus::Prepared { .. }) => {
+                Err(Error::NotGrowing("deleted > prepare".into()))
+            }
+            (Some(TableStatus::Deleted), TableStatus::Created(_)) => {
+                Err(Error::NotGrowing("deleted > created".into()))
+            }
+            (Some(TableStatus::Deleted), TableStatus::Deleted) => {
+                Err(Error::NotGrowing("deleted = deleted".into()))
+            }
+        }?;
 
         let pre_bandwidth = current.map_or(0, |t| t.status.local_bandwidth());
         let post_bandwidth = self.status.local_bandwidth();

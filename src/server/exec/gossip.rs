@@ -114,7 +114,7 @@ impl Rpc for GossipSync {
             .await;
 
             match table {
-                Ok(()) | Err(Error::NotGrowing) => {}
+                Ok(()) | Err(Error::NotGrowing(_)) => {}
                 Err(e) => return Err(e.into()),
             }
         }
