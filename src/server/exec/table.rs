@@ -124,7 +124,9 @@ pub async fn table_create(
     }
     let results = set.join_all().await;
     log::debug!("commit results {results:?}");
-    if results.iter().flatten().any(Result::is_err) {
+
+    // If any of the nested result is an error, then delete the table.
+    if results.iter().any(|x| !matches!(x, Ok(Ok(Ok(()))))) {
         for peer in data.peers() {
             let rpc = TableDelete { id };
             tokio::spawn(rpc.exec(peer));
