@@ -309,23 +309,38 @@ impl Table {
         let current = Self::locked_load(self.id).await.ok().flatten();
 
         match (current.as_ref().map(|t| &t.status), &self.status) {
-            (None, TableStatus::Prepared { .. }) => Ok(()),
-            (None, TableStatus::Created(_)) => Ok(()),
-            (None, TableStatus::Deleted) => Ok(()),
+            (None, TableStatus::Prepared { .. }) => {
+                log::debug!("ok: none < prepared");
+                Ok(())
+            }
+            (None, TableStatus::Created(_)) => {
+                log::debug!("ok: none < created");
+                Ok(())
+            }
+            (None, TableStatus::Deleted) => {
+                log::debug!("ok: none < deleted");
+                Ok(())
+            }
             (Some(TableStatus::Prepared { .. }), TableStatus::Prepared { .. }) => {
                 Err(Error::NotGrowing("prepare = prepare".into()))
             }
             (Some(TableStatus::Prepared { .. }), TableStatus::Created(_)) => {
                 Err(Error::NotGrowing("prepare > created".into()))
             }
-            (Some(TableStatus::Prepared { .. }), TableStatus::Deleted) => Ok(()),
+            (Some(TableStatus::Prepared { .. }), TableStatus::Deleted) => {
+                log::debug!("ok: prepared < deleted");
+                Ok(())
+            }
             (Some(TableStatus::Created(_)), TableStatus::Prepared { .. }) => {
                 Err(Error::NotGrowing("created > prepare".into()))
             }
             (Some(TableStatus::Created(_)), TableStatus::Created(_)) => {
                 Err(Error::NotGrowing("created = created".into()))
             }
-            (Some(TableStatus::Created(_)), TableStatus::Deleted) => Ok(()),
+            (Some(TableStatus::Created(_)), TableStatus::Deleted) => {
+                log::debug!("ok: created < deleted");
+                Ok(())
+            }
             (Some(TableStatus::Deleted), TableStatus::Prepared { .. }) => {
                 Err(Error::NotGrowing("deleted > prepare".into()))
             }
