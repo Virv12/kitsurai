@@ -60,7 +60,7 @@ pub async fn item_get(table: Uuid, key: &[u8]) -> Result<Option<Bytes>, Error> {
     log::debug!("{table} get");
     let path = store_path().join(table.to_string()).join(hex::encode(key));
 
-    match tokio::fs::read(&path).await {
+    match std::fs::read(&path) {
         Ok(content) => Ok(Some(Bytes::from(content))),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e.into()),

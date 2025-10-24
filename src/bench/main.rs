@@ -87,7 +87,8 @@ async fn run_lstress(server: &str, reqs: RequestFn, tasks: u64) {
 
 async fn bench_max(name: &str, server: &str, reqs: RequestFn, tasks: u64) -> Result<()> {
     let mut clients = Vec::new();
-    for _ in 0..20 {
+    let cpus = num_cpus::get();
+    for _ in 0..10 * cpus - 1 {
         clients.push(get_conn(server).await.unwrap());
     }
 
@@ -277,6 +278,9 @@ struct Args {
     #[clap(short, long, default_value = "localhost:8000")]
     server: String,
 
+    #[clap(long, default_value = "1000")]
+    num_keys: usize,
+
     table: String,
     key: String,
 
@@ -322,6 +326,7 @@ async fn get_conn(peer: &str) -> Result<Client> {
 async fn main() -> Result<()> {
     let Args {
         server,
+        num_keys,
         table,
         key,
         action,
@@ -330,13 +335,13 @@ async fn main() -> Result<()> {
 
     let reqs: RequestFn = match action {
         Action::Get => Arc::new(move |i| {
-            let i = i % 1000;
+            let i = i % num_keys;
             Request::get(format!("/{table}/{key}-{i}"))
                 .body(Full::new(Bytes::new()))
                 .unwrap()
         }),
         Action::Set => Arc::new(move |i| {
-            let i = i % 1000;
+            let i = i % num_keys;
             Request::post(format!("/{table}/{key}-{i}"))
                 .body(Full::new(Bytes::from(vec![0u8; 4096])))
                 .unwrap()
